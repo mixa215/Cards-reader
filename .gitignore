@@ -1,0 +1,30 @@
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# IDE
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Browser profiles and temp logs
+.browser_profiles/
+logs/
+scratch/
+
+# Generated runtime outputs
+output/*.xlsx
+!output/.gitkeep
+screenshots/prices/*.png
+!screenshots/prices/.gitkeep
+screenshots/errors/*.png
+!screenshots/errors/.gitkeep

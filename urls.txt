@@ -1,0 +1,12 @@
+# Тестовые ссылки для проверки парсера
+# Формат: по одной ссылке на строку. Строки с # — комментарии.
+
+# Ozon
+https://www.ozon.ru/product/29-velosiped-fizard-flow-19-alyuminiy-1x10-diskovye-tormoza-zelenyy-2085983408/?at=1hmm1N3-5-bXzuoKeFKir-ZAqf0UbTI8&sh=EcjAmU7gLA
+
+# Wildberries
+https://www.wildberries.ru/catalog/71742568/detail.aspx?targetUrl=MI
+
+# Яндекс Маркет
+https://market.yandex.ru/card/lampa-svetodiodnaya-homsly-12-vt-a60-ye27-4000k/5728793231?do-waremd5=5J3sZCzsm_Zk615b0NL0Nw&sponsored=1&cpc=mJr_NI6phVf5HauSJPCLrBUND6URsLMDxZYBdUGEln9S6B8AdgObs_vWkA0tn6c_GkWtJ188idelY73i-0gHOxnQwBI0WFEkNwaIOOwkYWWTxwmdg6eExd6IOrA46YRsBS-ErFwDi1mYNdj507UQhuRqqkRrZxd4JVdlbxV6Z_dH8p62h0Bbs4y2WYLzZiYogX6mOTZVc3mB9i9iWE5oO6L_0uzoZMkqGfKpc8Tlj9nlH0367mUemVlP51pOUAtV3lk_9P9LkhPYD1-CQRbPzznr2OI8ALsCcCWwzl9_JRs2CDoGvSEyoZ_W-tnPbQ8nPTVM3XmF19kE2Qn7jrWuKkAPhXEqp9DSbqKJ88RNzkTCOHeN6SSfdvX_t6JCkGMArtmbNaswUo5b1osgeZfypG2lY7gEi8IJ1Ht_MrP-jVYNMoLYjWKbimR6gG5Ks2uSmBYCnYBMGiChDWSYxTJzjMhrzM_t46QyKyEGJrDhGkWsETeyhgIKN_lc4xvvgJwJv_pBETSP5qM%2C&nid=41189250&ogV=335
+
