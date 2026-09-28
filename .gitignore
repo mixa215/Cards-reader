@@ -24,7 +24,7 @@ scratch/
 # Generated runtime outputs
 output/*.xlsx
 !output/.gitkeep
-screenshots/prices/*.png
-!screenshots/prices/.gitkeep
-screenshots/errors/*.png
+screenshots/errors/*
 !screenshots/errors/.gitkeep
+screenshots/prices/*
+!screenshots/prices/.gitkeep
