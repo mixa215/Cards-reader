@@ -69,19 +69,57 @@ PLATFORM_DISPLAY = {
 
 
 class ExcelWriter:
-    """Потоковая запись результатов в xlsx с автосохранением."""
+    """Потоковая запись результатов в xlsx с режимом дозаписи (append) и автосохранением."""
 
-    def __init__(self):
+    def __init__(self, filepath: Optional[Path] = None):
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        date_str = datetime.now().strftime("%Y-%m-%d")
-        self.filepath = OUTPUT_DIR / f"prices_report_{date_str}.xlsx"
-        self._row = 2          # Текущая строка (1 — заголовки)
-        self._unsaved = 0      # Счётчик несохранённых строк
-        self._wb = openpyxl.Workbook()
-        self._ws = self._wb.active
-        self._ws.title = "Цены"
-        self._setup_sheet()
-        logger.info(f"Excel отчёт: {self.filepath}")
+        if filepath is not None:
+            self.filepath = Path(filepath)
+        else:
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            self.filepath = OUTPUT_DIR / f"prices_report_{date_str}.xlsx"
+
+        self._unsaved = 0
+        self._last_number = 0
+
+        # Если файл уже существует — открываем для дозаписи (Append mode)
+        if self.filepath.exists():
+            try:
+                self._wb = openpyxl.load_workbook(str(self.filepath))
+                self._ws = self._wb["Цены"] if "Цены" in self._wb.sheetnames else self._wb.active
+                self._row = self._ws.max_row + 1
+
+                # Находим последний порядковый номер из первой колонки
+                for r in range(self._ws.max_row, 1, -1):
+                    val = self._ws.cell(r, 1).value
+                    if isinstance(val, int):
+                        self._last_number = val
+                        break
+                    elif isinstance(val, str) and val.isdigit():
+                        self._last_number = int(val)
+                        break
+
+                logger.info(
+                    f"Excel отчёт открыт в режиме дозаписи (append) со строки {self._row} "
+                    f"(последний №={self._last_number}): {self.filepath}"
+                )
+            except Exception as e:
+                logger.warning(f"Не удалось открыть существующий файл {self.filepath} ({e}). Создаю новый.")
+                self._wb = openpyxl.Workbook()
+                self._ws = self._wb.active
+                self._ws.title = "Цены"
+                self._setup_sheet()
+                self._row = 2
+                self._last_number = 0
+        else:
+            # Создаем новый файл с шапкой
+            self._wb = openpyxl.Workbook()
+            self._ws = self._wb.active
+            self._ws.title = "Цены"
+            self._setup_sheet()
+            self._row = 2
+            self._last_number = 0
+            logger.info(f"Создан новый Excel отчёт: {self.filepath}")
 
     # ── Внутренние методы ────────────────────────────────────────────────────
 
@@ -187,34 +225,54 @@ class ExcelWriter:
         screenshot_path: Optional[str],
         checked_at: Optional[datetime] = None,
     ) -> None:
-        """Записывает одну строку результата в таблицу."""
-        number = self._row - 1
+        """Записывает одну строку результата в таблицу с фиксацией точной метки времени."""
+        self._last_number += 1
+        number = self._last_number
         when = checked_at or datetime.now()
         self._write_row(number, platform, url, price, status, screenshot_path, when)
         self._unsaved += 1
-        logger.debug(f"Строка {number} записана: [{status}] {platform} | {price}")
+        logger.debug(
+            f"Строка {number} записана: [{status}] {platform} | {price} "
+            f"({when.strftime('%Y-%m-%d %H:%M:%S')})"
+        )
 
         # Автосохранение
         if self._unsaved >= EXCEL_AUTOSAVE_EVERY:
             self.save()
 
     def save(self) -> None:
-        """Сохраняет книгу на диск."""
+        """Сохраняет книгу на диск с обработкой PermissionError при открытом файле."""
+        import time
+
+        for attempt in range(2):
+            try:
+                self._wb.save(str(self.filepath))
+                self._unsaved = 0
+                logger.info(f"Excel сохранён: {self.filepath}")
+                return
+            except PermissionError:
+                if attempt == 0:
+                    logger.warning(
+                        f"Файл {self.filepath.name} заблокирован (открыт в Excel). "
+                        f"Повторная попытка сохранения через 1 сек..."
+                    )
+                    time.sleep(1.0)
+                else:
+                    break
+
+        # Если файл так и не освободился пользователем:
+        # Сохраняем во временный файл, чтобы не потерять спарсенные данные
+        alt_path = self.filepath.parent / "prices_report_temp.xlsx"
         try:
-            self._wb.save(str(self.filepath))
-            self._unsaved = 0
-            logger.info(f"Excel сохранён: {self.filepath}")
-        except PermissionError:
-            ts = datetime.now().strftime("%H%M%S")
-            alt_path = OUTPUT_DIR / f"prices_report_{datetime.now().strftime('%Y-%m-%d')}_{ts}.xlsx"
             logger.warning(
-                f"Файл {self.filepath.name} заблокирован другой программой. "
-                f"Сохраняю в {alt_path.name}"
+                f"Файл {self.filepath.name} по-прежнему заблокирован в Excel. "
+                f"Сохраняю во временный файл: {alt_path.name}"
             )
-            self.filepath = alt_path
-            self._wb.save(str(self.filepath))
+            self._wb.save(str(alt_path))
             self._unsaved = 0
-            logger.info(f"Excel сохранён: {self.filepath}")
+            logger.success(f"✓ Данные сохранены во временный файл: {alt_path}")
+        except Exception as e:
+            logger.error(f"Не удалось сохранить во временный файл {alt_path}: {e}")
 
 
     def close(self) -> None:

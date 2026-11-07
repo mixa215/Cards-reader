@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "check_interval_minutes": 10,
+  "excel_file_path": "output/multi_prices_report_{date}.xlsx",
+  "input_urls_path": "urls.txt"
+}
