@@ -63,6 +63,7 @@ PLATFORM_DISPLAY = {
     "ozon": "Ozon",
     "wildberries": "Wildberries",
     "yandex_market": "Yandex Market",
+    "avito": "Avito",
     "unknown": "—",
 }
 

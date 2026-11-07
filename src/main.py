@@ -64,7 +64,7 @@ def run(urls_file: Path) -> None:
     _setup_logging()
 
     logger.info("=" * 60)
-    logger.info("  ПАРСЕР ЦЕН — Ozon / Wildberries / Яндекс Маркет")
+    logger.info("  ПАРСЕР ЦЕН — Ozon / Wildberries / Яндекс Маркет / Avito")
     logger.info("=" * 60)
 
     # 1. Маршрутизация
@@ -110,7 +110,11 @@ def run(urls_file: Path) -> None:
         # OCR или DOM-текст → цена
         price: float | None = None
         if status == "SUCCESS":
-            price = extract_price(screenshot_path, raw_text_hint=raw_text)
+            if browser_result.get("price") is not None:
+                price = browser_result["price"]
+            else:
+                price = extract_price(screenshot_path, raw_text_hint=raw_text)
+
             if price is None:
                 logger.warning(f"Цена не извлечена для {url}")
                 status = "NOT_FOUND"

@@ -69,6 +69,15 @@ PRICE_SELECTORS: dict[str, list[str]] = {
         "[class*='ds-text_color_price-term']",
         "[data-zone-name='price']",
     ],
+    "avito": [
+        '[data-marker="item-view/item-price"]',
+        '[data-marker="item-view/item-price-container"]',
+        'span[data-marker="item-view/item-price"]',
+        '[itemprop="price"]',
+        '[class*="style-item-price-"]',
+        '[class*="price-price-"]',
+        '.js-item-price',
+    ],
 }
 
 # ─── Селекторы капчи / блокировки ────────────────────────────────────────────
@@ -89,6 +98,14 @@ CAPTCHA_SELECTORS: dict[str, list[str]] = {
         "[data-testid='captcha']",
         "#js-button",
     ],
+    "avito": [
+        ".firewall-container",
+        "#firewall",
+        "[data-marker='firewall']",
+        ".form-captcha",
+        ".captcha-container",
+        "[class*='firewall']",
+    ],
 }
 
 # ─── Текстовые маркеры капчи и блокировок ────────────────────────────────────
@@ -100,6 +117,10 @@ CAPTCHA_TEXT_MARKERS = [
     "я не робот",
     "showcaptcha",
     "проверяем браузер",
+    "доступ ограничен",
+    "firewall",
+    "проверка безопасности",
+    "ip-адрес временно заблокирован",
 ]
 
 # ─── Текстовые маркеры удаленного товара ─────────────────────────────────────
@@ -108,6 +129,11 @@ DELETED_TEXT_MARKERS = [
     "товар не найден",
     "страница не существует",
     "нет такого товара",
+    "объявление снято с публикации",
+    "объявление закрыто",
+    "снято с продажи",
+    "товар зарезервирован",
+    "объявление удалено",
 ]
 
 # ─── Ключевые слова 404-страниц ───────────────────────────────────────────────

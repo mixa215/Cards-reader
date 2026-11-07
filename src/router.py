@@ -17,6 +17,7 @@ PLATFORM_PATTERNS: dict[str, re.Pattern] = {
     "ozon": re.compile(r"(?:https?://)?(?:www\.)?ozon\.ru/(?:product/|t/)", re.IGNORECASE),
     "wildberries": re.compile(r"(?:https?://)?(?:www\.)?wildberries\.ru/catalog/", re.IGNORECASE),
     "yandex_market": re.compile(r"(?:https?://)?market\.yandex\.ru/(?:product|card|cc|catalog)/?", re.IGNORECASE),
+    "avito": re.compile(r"(?:https?://)?(?:www\.)?avito\.ru/", re.IGNORECASE),
 }
 
 
@@ -25,6 +26,7 @@ PLATFORM_NAMES: dict[str, str] = {
     "ozon": "Ozon",
     "wildberries": "Wildberries",
     "yandex_market": "Yandex Market",
+    "avito": "Avito",
     "unknown": "Неизвестно",
 }
 
@@ -65,7 +67,7 @@ def route_urls(filepath: Path) -> list[tuple[str, str]]:
         if platform == "unknown":
             logger.warning(f"[UNSUPPORTED] {url}")
         else:
-            logger.info(f"[{platform.upper():14}] {url}")
+            logger.info(f"[{platform.upper()}] {url}")
         routed.append((url, platform))
 
     logger.info(

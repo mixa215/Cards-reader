@@ -378,10 +378,13 @@ def fetch_yandex_market(url: str) -> BrowserResult:
 
 
 # ─── Единая точка входа ───────────────────────────────────────────────────────
+from avito_worker import fetch_avito
+
 _FETCHERS = {
     "ozon": fetch_ozon,
     "wildberries": fetch_wildberries,
     "yandex_market": fetch_yandex_market,
+    "avito": fetch_avito,
 }
 
 
