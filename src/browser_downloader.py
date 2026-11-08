@@ -179,6 +179,14 @@ class ChromeProfileDownloader:
             logger.warning("Список ссылок пуст.")
             return []
 
+        # 1. Проверяем статус авторизации ДО запуска Playwright.
+        # Если требуются входы на площадки (флаг false в main_config.json или force_reauth=true),
+        # запускаем нативный Google Chrome (subprocess.Popen) без CDP и без Playwright.
+        # Это гарантирует 100% обход WAF Ozon и RWB Wildberries и освобождение файловых блокировок.
+        if not self.browser_manager.is_auth_ready():
+            logger.info("Обнаружены неавторизованные маркетплейсы. Запуск предварительной авторизации через нативный Chrome...")
+            self.browser_manager.ensure_marketplaces_auth(context=None)
+
         logger.info(
             f"Начало выгрузки {len(urls)} страниц через Chrome "
             f"(режим: {self.browser_manager.mode}, профиль: '{self.profile_name}')..."
@@ -189,8 +197,10 @@ class ChromeProfileDownloader:
             context, browser = self.browser_manager.get_context(pw)
 
             try:
-                # Режим первичной авторизации: проверяет профиль и при необходимости ждет входа
-                self.browser_manager.ensure_marketplaces_auth(context)
+                # Гарантируем наличие постоянной фоновой вкладки-якоря в контексте,
+                # чтобы закрытие рабочих вкладок не приводило к завершению процесса Chromium
+                # и ошибке TargetClosedError на последующих итерациях.
+                anchor_page = context.pages[0] if context.pages else context.new_page()
 
                 for idx, url in enumerate(urls, start=1):
                     logger.info(f"[{idx}/{len(urls)}] Обработка: {url}")

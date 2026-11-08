@@ -54,6 +54,7 @@ from auth_setup import (
     is_profile_authorized,
     mark_profile_authorized,
     run_auth_setup,
+    run_native_chrome_auth,
 )
 
 
@@ -209,20 +210,19 @@ class BrowserManager:
             return True
 
         if context is None:
-            res = run_auth_setup(
+            success, confirmed = run_native_chrome_auth(
                 profile_dir=self.profile_dir,
-                channel=self.channel,
-                headless=self.headless,
-                force=force,
-                delay_between_tabs=delay_between_tabs,
-                auth_config=self.marketplace_auth,
+                chrome_exe=self.chrome_exe,
+                pending_platforms=pending,
                 config_path=self.config_file_path,
+                force=force,
+                auth_config=self.marketplace_auth,
             )
-            if res:
-                for p in pending:
+            if success and confirmed:
+                for p in confirmed:
                     setattr(self.marketplace_auth, p, True)
                 self.marketplace_auth.force_reauth = False
-            return res
+            return success
 
         opened_pages, opened_platforms = self.setup_marketplace_tabs(
             context,
@@ -235,25 +235,54 @@ class BrowserManager:
         opened_names = ", ".join([MARKETPLACE_CATALOG[k]["name"] for k in opened_platforms])
         logger.warning(f"[АВТОРИЗАЦИЯ] Ожидание завершения авторизации пользователем ({opened_names})...")
 
+        confirmed_platforms: List[str] = []
         try:
-            input(">>> После завершения входа во всех открытых сервисах нажмите [ENTER]: ")
+            ans = input(">>> Вход во все открытые сервисы выполнен успешно? [Y/n]: ").strip().lower()
         except (EOFError, OSError):
-            logger.debug("Консольный ввод недоступен (неинтерактивный режим).")
+            ans = "y"
 
-        # 1. Обновляем main_config.json на true
-        update_marketplace_auth(
-            config_path=self.config_file_path,
-            platforms=opened_platforms,
-            reset_force=True,
-        )
+        if ans in ("", "y", "yes", "да", "д"):
+            confirmed_platforms = list(opened_platforms)
+        else:
+            for p_key in opened_platforms:
+                name = MARKETPLACE_CATALOG[p_key]["name"]
+                try:
+                    sub_ans = input(f"    Вход в {name} выполнен успешно? [y/N]: ").strip().lower()
+                except (EOFError, OSError):
+                    sub_ans = "n"
+                if sub_ans in ("y", "yes", "да", "д"):
+                    confirmed_platforms.append(p_key)
+                else:
+                    logger.warning(f"Вход в {name} не подтвержден пользователем (флаг останется false).")
 
-        # 2. Обновляем локальный объект в памяти
-        for p in opened_platforms:
-            setattr(self.marketplace_auth, p, True)
-        self.marketplace_auth.force_reauth = False
+        if confirmed_platforms:
+            # 1. Обновляем main_config.json на true только для подтвержденных
+            update_marketplace_auth(
+                config_path=self.config_file_path,
+                platforms=confirmed_platforms,
+                reset_force=True,
+            )
 
-        # 3. Фиксируем маркер .auth_ready в профиле
-        mark_profile_authorized(self.profile_dir)
+            # 2. Обновляем локальный объект в памяти
+            for p in confirmed_platforms:
+                setattr(self.marketplace_auth, p, True)
+            self.marketplace_auth.force_reauth = False
+
+            # 3. Фиксируем маркер .auth_ready в профиле
+            mark_profile_authorized(self.profile_dir)
+            conf_names = ", ".join([MARKETPLACE_CATALOG[k]["name"] for k in confirmed_platforms])
+            logger.success(f"✓ Авторизация для [{conf_names}] подтверждена! Флаги в main_config.json обновлены на true.")
+        else:
+            logger.warning("Вход не подтвержден ни для одной площадки. Флаги в main_config.json не изменены.")
+
+        # Предотвращаем закрытие процесса Chromium:
+        # если общее количество страниц равно количеству закрываемых страниц,
+        # создаем страницу-якорь, чтобы Chromium не завершил работу с TargetClosedError
+        if len(context.pages) <= len(opened_pages):
+            try:
+                context.new_page()
+            except Exception:
+                pass
 
         # 4. Закрываем настроечные вкладки перед стартом парсинга товаров
         for page in opened_pages:
@@ -262,8 +291,7 @@ class BrowserManager:
             except Exception:
                 pass
 
-        logger.success(f"✓ Авторизация для [{opened_names}] подтверждена! Флаги в main_config.json обновлены на true.")
-        return True
+        return bool(confirmed_platforms)
 
     def check_or_request_auth(
         self,

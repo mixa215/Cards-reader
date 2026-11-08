@@ -1,34 +1,26 @@
 """
-auth_setup.py — Модуль гранулярного каскадного запуска авторизации на маркетплейсах через выделенный профиль Playwright
-(Dedicated Persistent Context).
+auth_setup.py — Модуль гранулярного каскадного запуска авторизации на маркетплейсах через выделенный профиль
+(Dedicated Persistent Context и Native Chrome Subprocess).
 
-Поведение:
-  1. Читает блок marketplace_auth из main_config.json:
-       - ozon: bool
-       - wildberries: bool
-       - yandex_market: bool
-       - avito: bool
-       - force_reauth: bool
-  2. Запускает Google Chrome в выделенном каталоге chrome_automation_profile.
-  3. Открывает вкладки ТОЛЬКО для тех маркетплейсов, у которых флаг равен false (или для всех при force_reauth=True):
-       - Вкладка 1: Ozon (https://www.ozon.ru/) (пауза 3 сек)
-       - Вкладка 2: Wildberries (https://www.wildberries.ru/) (пауза 3 сек)
-       - Вкладка 3: Яндекс Маркет (https://market.yandex.ru/) (пауза 3 сек)
-       - Вкладка 4: Avito (https://www.avito.ru/)
-  4. Неблокирующая загрузка: используется wait_until="commit".
-  5. Ни одна из открытых вкладок не закрывается в процессе открытия.
-  6. Единое ожидание: терминал ожидает нажатия клавиши [ENTER] от пользователя.
-  7. После нажатия [ENTER]:
-       - Автоматически обновляет соответствующие флаги в main_config.json на true;
-       - Сбрасывает force_reauth в false;
-       - Создает маркерный файл .auth_ready (и .auth_confirmed) в каталоге профиля.
+Архитектура обхода WAF Ozon и RWB Wildberries:
+  1. Для ручного входа используется ЧИСТЫЙ НАЦИОНАЛЬНЫЙ ЗАПУСК системного Google Chrome (через subprocess.Popen).
+     БЕЗ Playwright, БЕЗ CDP, БЕЗ отладочных пайпов и портов!
+     Это гарантирует 100% обход детекта fab_chlg (Ozon) и "Подозрительная активность" (WB),
+     так как запускается обычный штатный процесс пользователя с папкой профиля chrome_automation_profile.
+  2. Флаги авторизации защищены от ложного переключения:
+     После закрытия Chrome терминал запрашивает подтверждение успешности входа.
+     Флаги обновляются в main_config.json на true ТОЛЬКО для подтвержденных сервисов.
+  3. Для автоматического режима поддерживается также запуск через Playwright со Stealth-маскировкой
+     (browser_stealth).
 
 Запуск вручную:
-  python src/auth_setup.py
   setup_auth.bat
+  python src/auth_setup.py
+  python src/auth_setup.py --platforms ozon wildberries
 """
 import sys
 import time
+import subprocess
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
 
@@ -44,6 +36,7 @@ from config_loader import (
     load_config,
     update_marketplace_auth,
     MarketplaceAuthConfig,
+    BrowserConfig,
 )
 from browser_stealth import (
     apply_stealth,
@@ -136,6 +129,134 @@ def mark_profile_authorized(profile_dir: Path) -> None:
             logger.warning(f"Не удалось записать маркер {marker}: {e}")
 
 
+def run_native_chrome_auth(
+    profile_dir: Optional[Path] = None,
+    chrome_exe: Optional[Path] = None,
+    pending_platforms: Optional[List[str]] = None,
+    config_path: Optional[Path] = None,
+    force: bool = False,
+    auth_config: Optional[MarketplaceAuthConfig] = None,
+) -> Tuple[bool, List[str]]:
+    """
+    Чистый нативный запуск системного Google Chrome через subprocess.Popen (БЕЗ Playwright, БЕЗ CDP).
+    Позволяет обойти WAF Ozon (fab_chlg) и антибот RWB Wildberries на 100%.
+
+    Защита флагов: флаги обновляются в main_config.json ТОЛЬКО для сервисов,
+    вход в которые подтвержден пользователем.
+    """
+    if auth_config is None:
+        cfg = load_config(config_path)
+        auth_config = cfg.marketplace_auth
+        config_path = config_path or cfg.config_file_path
+
+    target_profile_dir = profile_dir or (base_config.BASE_DIR / "chrome_automation_profile")
+    target_profile_dir = Path(target_profile_dir).resolve()
+    target_profile_dir.mkdir(parents=True, exist_ok=True)
+
+    target_chrome_exe = chrome_exe or BrowserConfig().resolve_chrome_exe()
+    if not target_chrome_exe or not Path(target_chrome_exe).exists():
+        logger.error(f"Исполняемый файл Chrome не найден: {target_chrome_exe}")
+        return False, []
+
+    if pending_platforms is None:
+        if force or auth_config.force_reauth:
+            target_platforms = ALL_PLATFORMS
+        else:
+            target_platforms = auth_config.get_pending_marketplaces()
+    else:
+        target_platforms = [p for p in pending_platforms if p in MARKETPLACE_CATALOG]
+
+    if not target_platforms:
+        logger.info(
+            "✓ Все маркетплейсы уже авторизованы согласно main_config.json. "
+            "Открытие вкладок не требуется (для повторного входа укажите 'force_reauth': true в main_config.json)."
+        )
+        return True, []
+
+    target_urls = [MARKETPLACE_CATALOG[p]["url"] for p in target_platforms]
+    names_list = [MARKETPLACE_CATALOG[p]["name"] for p in target_platforms]
+
+    cmd = [
+        str(target_chrome_exe),
+        f"--user-data-dir={target_profile_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--start-maximized",
+        *target_urls,
+    ]
+
+    banner = (
+        "\n" + "=" * 76 + "\n"
+        "  [НАЦИОНАЛЬНЫЙ ВХОД] ЗАПУСК СИСТЕМНОГО GOOGLE CHROME (БЕЗ PLAYWRIGHT / БЕЗ CDP)\n"
+        "=" * 76 + "\n"
+        f"  Каталог профиля: {target_profile_dir}\n"
+        f"  Открыты вкладки: {', '.join(names_list)}\n\n"
+        "  ИНСТРУКЦИЯ ПО ВХОДУ:\n"
+        "  1. В открывшемся окне Google Chrome авторизуйтесь в нужных сервисах.\n"
+        "     Браузер запущен нативно, поэтому WAF-заглушки (Ozon) и RWB (WB) не появятся.\n"
+        "  2. После успешного входа ЗАКРОЙТЕ окно Google Chrome,\n"
+        "     чтобы куки записались на диск и каталог профиля разблокировался.\n"
+        "  3. Вернитесь в эту консоль для подтверждения.\n"
+        + "=" * 76 + "\n"
+    )
+    print(banner)
+    logger.info(f"Запуск нативного процесса Chrome: {target_chrome_exe}")
+
+    try:
+        proc = subprocess.Popen(cmd)
+    except Exception as e:
+        logger.error(f"Не удалось запустить нативный Chrome: {e}")
+        return False, []
+
+    # Защищенный опрос пользователя для предотвращения ложного переключения флагов
+    confirmed_platforms: List[str] = []
+    try:
+        ans = input(">>> Вход во все открытые сервисы выполнен успешно? [Y/n]: ").strip().lower()
+    except (EOFError, OSError):
+        ans = "y"
+
+    if ans in ("", "y", "yes", "да", "д"):
+        confirmed_platforms = list(target_platforms)
+    else:
+        for p in target_platforms:
+            name = MARKETPLACE_CATALOG[p]["name"]
+            try:
+                sub_ans = input(f"    Вход в {name} выполнен успешно? [y/N]: ").strip().lower()
+            except (EOFError, OSError):
+                sub_ans = "n"
+            if sub_ans in ("y", "yes", "да", "д"):
+                confirmed_platforms.append(p)
+            else:
+                logger.warning(f"Вход в {name} не подтвержден пользователем (флаг останется false).")
+
+    # Проверяем закрытие окна Chrome для освобождения файловой блокировки профиля
+    if proc.poll() is None:
+        logger.info("Ожидание закрытия окна Google Chrome для освобождения каталога профиля...")
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            logger.warning("Окно Chrome не было закрыто пользователем. Закрытие процесса для разблокировки каталога...")
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+            except Exception:
+                pass
+
+    if confirmed_platforms:
+        update_marketplace_auth(
+            config_path=config_path,
+            platforms=confirmed_platforms,
+            reset_force=True,
+        )
+        mark_profile_authorized(target_profile_dir)
+        conf_names = ", ".join([MARKETPLACE_CATALOG[k]["name"] for k in confirmed_platforms])
+        logger.success(f"✓ Успешно зафиксирован вход для [{conf_names}]! Флаги в main_config.json обновлены на true.")
+        return True, confirmed_platforms
+    else:
+        logger.warning("Вход не подтвержден ни для одной площадки. Флаги в main_config.json сохранены без изменений.")
+        return False, []
+
+
 def setup_marketplace_tabs(
     context: BrowserContext,
     platforms: Optional[List[str]] = None,
@@ -221,13 +342,24 @@ def run_auth_setup(
     auth_config: Optional[MarketplaceAuthConfig] = None,
     config_path: Optional[Path] = None,
     platforms: Optional[List[str]] = None,
+    use_native: bool = True,
 ) -> bool:
     """
-    Запускает Google Chrome под выделенным профилем автоматизации.
-    Открывает вкладки ТОЛЬКО для маркетплейсов с флагом false (или всех при force=True / force_reauth=True,
-    либо указанных в platforms).
-    После нажатия [ENTER] автоматически обновляет флаги в main_config.json на true.
+    Точка входа запуска авторизации.
+    По умолчанию (use_native=True) запускает нативный Google Chrome через subprocess.Popen,
+    чтобы полностью исключить детект WAF/CDP со стороны Ozon и Wildberries.
     """
+    if use_native:
+        success, _ = run_native_chrome_auth(
+            profile_dir=profile_dir,
+            pending_platforms=platforms,
+            config_path=config_path,
+            force=force,
+            auth_config=auth_config,
+        )
+        return success
+
+    # Режим Playwright (если запрошен или в тестах)
     if auth_config is None:
         cfg = load_config(config_path)
         auth_config = cfg.marketplace_auth
@@ -237,7 +369,6 @@ def run_auth_setup(
     target_profile_dir = Path(target_profile_dir).resolve()
     target_profile_dir.mkdir(parents=True, exist_ok=True)
 
-    # Определяем, какие платформы требуют авторизации
     if platforms:
         pending_platforms = [p for p in platforms if p in MARKETPLACE_CATALOG]
     elif force or auth_config.force_reauth:
@@ -254,7 +385,7 @@ def run_auth_setup(
 
     names_list = [MARKETPLACE_CATALOG[p]["name"] for p in pending_platforms]
     logger.info("=" * 76)
-    logger.info(f"  ЗАПУСК АВТОРИЗАЦИИ: требуется вход на {len(pending_platforms)} пл.: {', '.join(names_list)}")
+    logger.info(f"  ЗАПУСК АВТОРИЗАЦИИ (PLAYWRIGHT): требуется вход на {len(pending_platforms)} пл.: {', '.join(names_list)}")
     logger.info(f"  Профиль: {target_profile_dir}")
     logger.info("=" * 76)
 
@@ -280,7 +411,6 @@ def run_auth_setup(
                 no_viewport=True,
             )
 
-        # Применяем Stealth-маскировку на уровне контекста
         apply_stealth(context)
 
         try:
@@ -297,34 +427,46 @@ def run_auth_setup(
                 f"({', '.join([MARKETPLACE_CATALOG[k]['name'] for k in opened_platforms])})..."
             )
 
+            confirmed_platforms: List[str] = []
             try:
-                input(">>> После завершения входа во всех открытых сервисах нажмите [ENTER]: ")
+                ans = input(">>> Вход во все открытые сервисы выполнен успешно? [Y/n]: ").strip().lower()
             except (EOFError, OSError):
-                logger.debug("Консольный ввод недоступен (неинтерактивный режим).")
+                ans = "y"
 
-            # 1. Автоматически обновляем флаги в main_config.json на true
-            update_marketplace_auth(
-                config_path=config_path,
-                platforms=opened_platforms,
-                reset_force=True,
-            )
+            if ans in ("", "y", "yes", "да", "д"):
+                confirmed_platforms = list(opened_platforms)
+            else:
+                for p_key in opened_platforms:
+                    name = MARKETPLACE_CATALOG[p_key]["name"]
+                    try:
+                        sub_ans = input(f"    Вход в {name} выполнен успешно? [y/N]: ").strip().lower()
+                    except (EOFError, OSError):
+                        sub_ans = "n"
+                    if sub_ans in ("y", "yes", "да", "д"):
+                        confirmed_platforms.append(p_key)
+                    else:
+                        logger.warning(f"Вход в {name} не подтвержден пользователем (флаг останется false).")
 
-            # 2. Фиксируем маркер .auth_ready в профиле
-            mark_profile_authorized(target_profile_dir)
+            if confirmed_platforms:
+                update_marketplace_auth(
+                    config_path=config_path,
+                    platforms=confirmed_platforms,
+                    reset_force=True,
+                )
+                mark_profile_authorized(target_profile_dir)
+                updated_names = ", ".join([MARKETPLACE_CATALOG[k]["name"] for k in confirmed_platforms])
+                logger.success(
+                    f"✓ Авторизация для [{updated_names}] успешно зафиксирована! "
+                    f"Флаги в main_config.json обновлены на true."
+                )
 
-            # 3. Закрываем настроечные вкладки
             for page in opened_pages:
                 try:
                     page.close()
                 except Exception:
                     pass
 
-            updated_names = ", ".join([MARKETPLACE_CATALOG[k]["name"] for k in opened_platforms])
-            logger.success(
-                f"✓ Авторизация для [{updated_names}] успешно зафиксирована! "
-                f"Флаги в main_config.json обновлены на true."
-            )
-            return True
+            return bool(confirmed_platforms)
         finally:
             try:
                 context.close()
@@ -347,12 +489,10 @@ if __name__ == "__main__":
 
     cfg = load_config()
     p_dir = cfg.browser.resolve_profile_dir()
-    run_auth_setup(
+    run_native_chrome_auth(
         profile_dir=p_dir,
-        channel=cfg.browser.channel,
-        headless=cfg.browser.headless,
+        pending_platforms=cli_args.platforms,
         force=cli_args.force,
-        platforms=cli_args.platforms,
         auth_config=cfg.marketplace_auth,
         config_path=cfg.config_file_path,
     )

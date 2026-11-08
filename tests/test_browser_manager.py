@@ -216,13 +216,52 @@ class TestBrowserPersistentManager(unittest.TestCase):
             mock_pw_instance.chromium.launch_persistent_context.return_value = mock_context
 
             with patch("builtins.input", return_value=""):
-                success = run_auth_setup(profile_dir=Path(td), force=True)
+                success = run_auth_setup(profile_dir=Path(td), force=True, use_native=False)
                 self.assertTrue(success)
                 self.assertTrue((Path(td) / ".auth_ready").exists())
                 self.assertTrue((Path(td) / ".auth_confirmed").exists())
                 self.assertEqual(mock_page.goto.call_count, 4)
                 mock_context.close.assert_called_once()
                 mock_update_auth.assert_called_once()
+
+    @patch("auth_setup.update_marketplace_auth")
+    @patch("auth_setup.subprocess.Popen")
+    def test_run_native_chrome_auth(self, mock_popen, mock_update_auth):
+        from auth_setup import run_native_chrome_auth
+
+        with tempfile.TemporaryDirectory() as td:
+            fake_proc = MagicMock()
+            fake_proc.poll.return_value = 0
+            mock_popen.return_value = fake_proc
+
+            fake_chrome = Path(td) / "chrome.exe"
+            fake_chrome.write_text("fake binary", encoding="utf-8")
+
+            # Тест 1: успешное подтверждение 'y'
+            with patch("builtins.input", return_value="y"):
+                success, confirmed = run_native_chrome_auth(
+                    profile_dir=Path(td),
+                    chrome_exe=fake_chrome,
+                    pending_platforms=["ozon", "wildberries"],
+                    force=False,
+                )
+                self.assertTrue(success)
+                self.assertEqual(confirmed, ["ozon", "wildberries"])
+                self.assertTrue((Path(td) / ".auth_ready").exists())
+                mock_update_auth.assert_called_once()
+
+            # Тест 2: отказ пользователя 'n'
+            mock_update_auth.reset_mock()
+            with patch("builtins.input", return_value="n"):
+                success, confirmed = run_native_chrome_auth(
+                    profile_dir=Path(td),
+                    chrome_exe=fake_chrome,
+                    pending_platforms=["ozon"],
+                    force=False,
+                )
+                self.assertFalse(success)
+                self.assertEqual(confirmed, [])
+                mock_update_auth.assert_not_called()
 
     @patch("auth_setup.time.sleep")
     def test_granular_auth_opens_only_false_platforms(self, mock_sleep):

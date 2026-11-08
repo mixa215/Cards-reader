@@ -69,6 +69,44 @@ class TestBrowserDownloader(unittest.TestCase):
             self.assertTrue(Path(res["dump_path"]).exists())
             self.assertIn("1500 ₽", Path(res["dump_path"]).read_text(encoding="utf-8"))
 
+    def test_download_all_anchor_page_retention(self):
+        from unittest.mock import MagicMock, patch
+        from browser_downloader import ChromeProfileDownloader
+        from config_loader import AppConfig
+
+        with tempfile.TemporaryDirectory() as td:
+            urls_file = Path(td) / "urls.txt"
+            urls_file.write_text("https://www.ozon.ru/product/item-111/\nhttps://www.ozon.ru/product/item-222/\n", encoding="utf-8")
+
+            cfg = AppConfig(dump_pages_dir=td)
+            downloader = ChromeProfileDownloader(cfg)
+
+            # Мокаем auth_ready = True
+            downloader.browser_manager.is_auth_ready = MagicMock(return_value=True)
+
+            mock_anchor = MagicMock()
+            mock_anchor.url = "about:blank"
+            mock_work_page = MagicMock()
+
+            mock_context = MagicMock()
+            mock_context.pages = [mock_anchor]
+            mock_context.new_page.return_value = mock_work_page
+
+            downloader.browser_manager.get_context = MagicMock(return_value=(mock_context, mock_context))
+            downloader.download_url = MagicMock(return_value={"status": "SUCCESS", "sku": "111", "url": "test"})
+
+            with patch("browser_downloader.sync_playwright") as mock_pw:
+                mock_pw_inst = MagicMock()
+                mock_pw.return_value.__enter__.return_value = mock_pw_inst
+
+                results = downloader.download_all(urls_file)
+
+                # Проверяем, что якорь не был закрыт в цикле
+                mock_anchor.close.assert_not_called()
+                # Проверяем, что рабочая страница открывалась и закрывалась для каждого URL (2 раза)
+                self.assertEqual(mock_work_page.close.call_count, 2)
+                self.assertEqual(len(results), 2)
+
 
 
 class TestOfflineParser(unittest.TestCase):
