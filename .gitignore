@@ -28,3 +28,10 @@ screenshots/prices/*.png
 !screenshots/prices/.gitkeep
 screenshots/errors/*.png
 !screenshots/errors/.gitkeep
+downloads/pages_cache/*.html
+!downloads/pages_cache/.gitkeep
+.chrome_temp_profile/
+.chrome_bot_profile/
+chrome_automation_profile/
+.auth_confirmed
+

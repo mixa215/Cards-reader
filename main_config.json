@@ -2,5 +2,12 @@
   "enabled": true,
   "check_interval_minutes": 10,
   "excel_file_path": "output/multi_prices_report_{date}.xlsx",
-  "input_urls_path": "urls.txt"
+  "input_urls_path": "urls.txt",
+  "use_local_profile_downloader": true,
+  "dump_pages_dir": "downloads/pages_cache",
+  "cleanup_cache_days": 7,
+  "browser": {
+    "profile_dir": "chrome_automation_profile",
+    "headless": false
+  }
 }

@@ -128,9 +128,9 @@ class TestExcelAppendMode(unittest.TestCase):
         self.assertEqual(ws2.cell(3, 2).value, "Ozon")
         self.assertEqual(ws2.cell(4, 2).value, "Wildberries")
 
-        # Проверяем метки времени
-        self.assertEqual(ws2.cell(2, 8).value, dt1)
-        self.assertEqual(ws2.cell(4, 8).value, dt2)
+        # Проверяем метки времени (колонка 11)
+        self.assertEqual(ws2.cell(2, 11).value, dt1)
+        self.assertEqual(ws2.cell(4, 11).value, dt2)
         wb2.close()
 
 
