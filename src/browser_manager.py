@@ -10,11 +10,13 @@ browser_manager.py — Модуль управления браузером че
      - args=["--no-first-run", "--no-default-browser-check", "--start-maximized"];
      - ignore_default_args=["--enable-automation"] (без плашки автоматизации и без --no-sandbox);
      - no_viewport=True.
-  3. Первичная авторизация (ensure_marketplaces_auth):
-     - Каскадный неблокирующий запуск 4 вкладок (Ozon, Wildberries, Яндекс Маркет, Avito) с паузой 3 секунды;
+  3. Гранулярная авторизация (ensure_marketplaces_auth):
+     - Читает блок marketplace_auth из main_config.json;
+     - Открывает вкладки ТОЛЬКО для маркетплейсов со значением false (или всех при force_reauth=True);
+     - Каскадный неблокирующий запуск с паузой 3 секунды;
      - Ни одна из вкладок не закрывается в процессе открытия;
-     - Единое ожидание ввода [ENTER] пользователем после открытия всех вкладок;
-     - Фиксация статуса в маркере .auth_ready (и .auth_confirmed) в каталоге профиля.
+     - Единое ожидание ввода [ENTER] пользователем;
+     - После нажатия [ENTER] обновляет соответствующие флаги в main_config.json на true.
   4. Полная изоляция от пользовательского Chrome: никаких taskkill, портов CDP 9222/9225 и конфликтов блокировок.
 """
 import os
@@ -27,13 +29,22 @@ from typing import Optional, Tuple, Any, Union, List
 from loguru import logger
 from playwright.sync_api import Playwright, BrowserContext, Page
 
-from config_loader import BrowserConfig, AppConfig
+from config_loader import (
+    BrowserConfig,
+    AppConfig,
+    MarketplaceAuthConfig,
+    update_marketplace_auth,
+)
 import config as base_config
 from auth_setup import (
+    MARKETPLACE_CATALOG,
+    ALL_PLATFORMS,
     MARKETPLACE_TABS,
     MARKETPLACE_URLS,
     AUTH_MESSAGE,
     AUTH_MARKERS,
+    format_auth_banner,
+    setup_marketplace_tabs,
     setup_all_marketplace_tabs,
     is_profile_authorized,
     mark_profile_authorized,
@@ -43,16 +54,23 @@ from auth_setup import (
 
 class BrowserManager:
     """
-    Менеджер браузера на базе выделенного постоянного профиля Playwright (Persistent Context).
+    Менеджер браузера на базе выделенного постоянного профиля Playwright (Persistent Context)
+    с поддержкой гранулярного контроля статусов авторизации маркетплейсов.
     """
 
     def __init__(self, config: Any):
-        if isinstance(config, BrowserConfig):
-            self.browser_config: BrowserConfig = config
-        elif isinstance(config, AppConfig):
-            self.browser_config = config.browser
+        if isinstance(config, AppConfig):
+            self.browser_config: BrowserConfig = config.browser
+            self.marketplace_auth: MarketplaceAuthConfig = config.marketplace_auth
+            self.config_file_path: Optional[Path] = config.config_file_path
+        elif isinstance(config, BrowserConfig):
+            self.browser_config = config
+            self.marketplace_auth = MarketplaceAuthConfig()
+            self.config_file_path = None
         else:
-            self.browser_config = BrowserConfig()
+            self.browser_config = getattr(config, "browser", BrowserConfig())
+            self.marketplace_auth = getattr(config, "marketplace_auth", MarketplaceAuthConfig())
+            self.config_file_path = getattr(config, "config_file_path", None)
 
         self.mode: str = getattr(self.browser_config, "mode", "persistent")
         self.profile_dir: Path = self.browser_config.resolve_profile_dir()
@@ -73,8 +91,10 @@ class BrowserManager:
         self.force_restart_chrome: bool = False
 
     def is_auth_ready(self) -> bool:
-        """Проверяет наличие маркера авторизации в каталоге профиля."""
-        return is_profile_authorized(self.profile_dir)
+        """Проверяет статус готовности авторизации."""
+        if getattr(self.marketplace_auth, "_is_explicit", False):
+            return self.marketplace_auth.is_all_authorized()
+        return self.marketplace_auth.is_all_authorized() or is_profile_authorized(self.profile_dir)
 
     def ensure_chrome_ready(self) -> bool:
         """
@@ -128,18 +148,29 @@ class BrowserManager:
             )
             return context, context
 
+    def setup_marketplace_tabs(
+        self,
+        context: BrowserContext,
+        platforms: Optional[List[str]] = None,
+        delay_between_tabs: float = 3.0,
+    ) -> Tuple[List[Page], List[str]]:
+        """
+        Каскадно открывает вкладки только для указанных платформ с паузой 3 сек.
+        """
+        return setup_marketplace_tabs(
+            context,
+            platforms=platforms,
+            delay_between_tabs=delay_between_tabs,
+        )
+
     def setup_all_marketplace_tabs(
         self,
         context: BrowserContext,
         delay_between_tabs: float = 3.0,
     ) -> List[Page]:
         """
-        Каскадно открывает 4 вкладки со всеми целевыми маркетплейсами с паузой 3 сек.:
-          - Ozon: https://www.ozon.ru/
-          - Wildberries: https://www.wildberries.ru/
-          - Яндекс Маркет: https://market.yandex.ru/
-          - Avito: https://www.avito.ru/
-        Ни одна из открытых вкладок не закрывается в процессе открытия.
+        Каскадно открывает 4 вкладки со всеми целевыми маркетплейсами с паузой 3 сек.
+        (для обратной совместимости).
         """
         return setup_all_marketplace_tabs(context, delay_between_tabs=delay_between_tabs)
 
@@ -150,49 +181,84 @@ class BrowserManager:
         delay_between_tabs: float = 3.0,
     ) -> bool:
         """
-        Процедура первичной авторизации пользователя на 4 маркетплейсах:
-          1. Если маркер .auth_ready (или .auth_confirmed) существует и force=False,
-             этап пропускается (для штатных периодических запусков).
-          2. Если авторизация требуется (или force=True):
-             - При отсутствии переданного контекста запускает изолированную сессию run_auth_setup;
-             - В переданном контексте каскадно открывает 4 вкладки с задержкой 3 сек. (setup_all_marketplace_tabs);
-             - Выводит пользователю четкую инструкцию и ожидает нажатия [ENTER];
-             - Создает маркерный файл .auth_ready (и .auth_confirmed) в chrome_automation_profile;
-             - Закрывает настроечные вкладки перед стартом выгрузки товаров.
+        Процедура гранулярной первичной авторизации пользователя на маркетплейсах:
+          1. Определяет список требующих входа платформ из main_config.json (где флаг равен false).
+             Если force=True или force_reauth=True — открываются все 4 маркетплейса.
+          2. Если все требуемые маркетплейсы уже авторизованы, этап пропускается.
+          3. Открывает соседние вкладки ТОЛЬКО для неавторизованных маркетплейсов с паузой 3 сек.
+          4. Ожидает нажатия [ENTER] от пользователя в терминале.
+          5. Автоматически обновляет соответствующие флаги в main_config.json на true.
+          6. Закрывает настроечные вкладки перед выгрузкой товаров.
         """
-        if self.is_auth_ready() and not force:
+        if force or self.marketplace_auth.force_reauth:
+            pending = ALL_PLATFORMS
+        elif getattr(self.marketplace_auth, "_is_explicit", False):
+            pending = self.marketplace_auth.get_pending_marketplaces()
+        elif is_profile_authorized(self.profile_dir):
             logger.info("✓ Профиль автоматизации уже авторизован (.auth_ready обнаружен).")
+            return True
+        else:
+            pending = self.marketplace_auth.get_pending_marketplaces()
+
+        if not pending:
+            logger.info("✓ Все маркетплейсы уже авторизованы согласно main_config.json.")
             return True
 
         if context is None:
-            return run_auth_setup(
+            res = run_auth_setup(
                 profile_dir=self.profile_dir,
                 channel=self.channel,
                 headless=self.headless,
                 force=force,
                 delay_between_tabs=delay_between_tabs,
+                auth_config=self.marketplace_auth,
+                config_path=self.config_file_path,
             )
+            if res:
+                for p in pending:
+                    setattr(self.marketplace_auth, p, True)
+                self.marketplace_auth.force_reauth = False
+            return res
 
-        opened_pages = self.setup_all_marketplace_tabs(context, delay_between_tabs=delay_between_tabs)
+        opened_pages, opened_platforms = self.setup_marketplace_tabs(
+            context,
+            platforms=pending,
+            delay_between_tabs=delay_between_tabs,
+        )
 
-        print(AUTH_MESSAGE)
-        logger.warning("[АВТОРИЗАЦИЯ] Ожидание завершения авторизации пользователем во всех открытых вкладках...")
+        banner = format_auth_banner(opened_platforms, all_statuses=self.marketplace_auth.to_dict())
+        print(banner)
+        opened_names = ", ".join([MARKETPLACE_CATALOG[k]["name"] for k in opened_platforms])
+        logger.warning(f"[АВТОРИЗАЦИЯ] Ожидание завершения авторизации пользователем ({opened_names})...")
 
         try:
-            input(">>> После завершения входа во всех сервисах нажмите [ENTER]: ")
+            input(">>> После завершения входа во всех открытых сервисах нажмите [ENTER]: ")
         except (EOFError, OSError):
             logger.debug("Консольный ввод недоступен (неинтерактивный режим).")
 
+        # 1. Обновляем main_config.json на true
+        update_marketplace_auth(
+            config_path=self.config_file_path,
+            platforms=opened_platforms,
+            reset_force=True,
+        )
+
+        # 2. Обновляем локальный объект в памяти
+        for p in opened_platforms:
+            setattr(self.marketplace_auth, p, True)
+        self.marketplace_auth.force_reauth = False
+
+        # 3. Фиксируем маркер .auth_ready в профиле
         mark_profile_authorized(self.profile_dir)
 
-        # Закрываем настроечные вкладки перед стартом парсинга товаров
+        # 4. Закрываем настроечные вкладки перед стартом парсинга товаров
         for page in opened_pages:
             try:
                 page.close()
             except Exception:
                 pass
 
-        logger.success(f"✓ Авторизация на всех 4 площадках подтверждена и зафиксирована (.auth_ready в {self.profile_dir.name})!")
+        logger.success(f"✓ Авторизация для [{opened_names}] подтверждена! Флаги в main_config.json обновлены на true.")
         return True
 
     def check_or_request_auth(

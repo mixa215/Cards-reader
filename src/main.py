@@ -345,7 +345,12 @@ def main() -> None:
     parser.add_argument(
         "--auth",
         action="store_true",
-        help="Открыть 4 вкладки (Ozon, Wildberries, Яндекс Маркет, Avito) для ручной авторизации в профиле",
+        help="Открыть вкладки маркетплейсов для авторизации в профиле (по флагам из main_config.json)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Принудительно открыть все 4 маркетплейса независимо от текущих флагов",
     )
     args = parser.parse_args()
 
@@ -356,7 +361,9 @@ def main() -> None:
             profile_dir=cfg.browser.resolve_profile_dir(),
             channel=cfg.browser.channel,
             headless=cfg.browser.headless,
-            force=True,
+            force=args.force,
+            auth_config=cfg.marketplace_auth,
+            config_path=cfg.config_file_path,
         )
         return
     if args.interval and args.interval > 0:

@@ -79,6 +79,43 @@ class BrowserConfig:
 
 
 @dataclass
+class MarketplaceAuthConfig:
+    """Статусы авторизации для каждого маркетплейса и флаг принудительной переавторизации."""
+    ozon: bool = False
+    wildberries: bool = False
+    yandex_market: bool = False
+    avito: bool = False
+    force_reauth: bool = False
+    _is_explicit: bool = False
+
+    def is_authorized(self, platform: str) -> bool:
+        """Возвращает True, если маркетплейс авторизован и не установлен force_reauth."""
+        if self.force_reauth:
+            return False
+        return bool(getattr(self, platform, False))
+
+    def get_pending_marketplaces(self) -> list[str]:
+        """Возвращает список платформ (ключей), требующих авторизации."""
+        all_platforms = ["ozon", "wildberries", "yandex_market", "avito"]
+        if self.force_reauth:
+            return all_platforms
+        return [p for p in all_platforms if not getattr(self, p, False)]
+
+    def is_all_authorized(self) -> bool:
+        """Возвращает True, если все маркетплейсы авторизованы и force_reauth=False."""
+        return len(self.get_pending_marketplaces()) == 0
+
+    def to_dict(self) -> dict[str, bool]:
+        return {
+            "ozon": self.ozon,
+            "wildberries": self.wildberries,
+            "yandex_market": self.yandex_market,
+            "avito": self.avito,
+            "force_reauth": self.force_reauth,
+        }
+
+
+@dataclass
 class AppConfig:
     """Конфигурация приложения с валидированными параметрами."""
     check_interval_minutes: int = 10
@@ -93,6 +130,12 @@ class AppConfig:
 
     # Блок настроек браузера
     browser: BrowserConfig = field(default_factory=BrowserConfig)
+
+    # Блок гранулярного контроля авторизации маркетплейсов
+    marketplace_auth: MarketplaceAuthConfig = field(default_factory=MarketplaceAuthConfig)
+
+    # Путь к исходному файлу конфигурации (для обратной записи)
+    config_file_path: Optional[Path] = None
 
     def resolve_excel_path(
         self,
@@ -369,6 +412,27 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             kill_existing_chrome=False,
         )
 
+        # Парсинг блока marketplace_auth
+        has_explicit_auth = "marketplace_auth" in raw_data
+        raw_auth = raw_data.get("marketplace_auth", {})
+        if not isinstance(raw_auth, dict):
+            raw_auth = {}
+
+        auth_ozon = _validate_bool(raw_auth.get("ozon"), default=False)
+        auth_wb = _validate_bool(raw_auth.get("wildberries"), default=False)
+        auth_ym = _validate_bool(raw_auth.get("yandex_market"), default=False)
+        auth_avito = _validate_bool(raw_auth.get("avito"), default=False)
+        force_reauth = _validate_bool(raw_auth.get("force_reauth"), default=False)
+
+        marketplace_auth_cfg = MarketplaceAuthConfig(
+            ozon=auth_ozon,
+            wildberries=auth_wb,
+            yandex_market=auth_ym,
+            avito=auth_avito,
+            force_reauth=force_reauth,
+            _is_explicit=has_explicit_auth,
+        )
+
         cfg = AppConfig(
             check_interval_minutes=interval,
             enabled=enabled,
@@ -378,13 +442,15 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             dump_pages_dir=dump_dir,
             cleanup_cache_days=cleanup_days,
             browser=browser_cfg,
+            marketplace_auth=marketplace_auth_cfg,
+            config_file_path=target_path,
         )
 
         logger.debug(
             f"Конфиг успешно загружен [{target_path}]: "
             f"интервал={cfg.check_interval_minutes}м, active={cfg.enabled}, "
             f"browser_mode={cfg.browser.mode}, profile_dir={cfg.browser.profile_dir}, "
-            f"headless={cfg.browser.headless}"
+            f"headless={cfg.browser.headless}, marketplace_auth={marketplace_auth_cfg.to_dict()}"
         )
         return cfg
 
@@ -394,3 +460,58 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     except Exception as e:
         logger.error(f"Не удалось прочитать {target_path}: {e}. Применены параметры по умолчанию.")
         return AppConfig()
+
+
+def update_marketplace_auth(
+    config_path: Optional[Path] = None,
+    platforms: Optional[list[str]] = None,
+    all_true: bool = False,
+    reset_force: bool = True,
+    **kwargs: bool,
+) -> bool:
+    """
+    Обновляет блок 'marketplace_auth' в main_config.json.
+    Устанавливает True для указанных платформ, применяет kwargs и опционально сбрасывает force_reauth в False.
+    """
+    target_path = _find_config_file(config_path)
+    if not target_path or not target_path.exists():
+        logger.warning(f"Не удалось найти файл конфигурации для обновления marketplace_auth: {config_path}")
+        return False
+
+    try:
+        with open(target_path, "r", encoding="utf-8") as f:
+            raw_data = json.load(f)
+
+        if not isinstance(raw_data, dict):
+            raw_data = {}
+
+        auth_dict = raw_data.setdefault("marketplace_auth", {})
+        if not isinstance(auth_dict, dict):
+            auth_dict = {}
+            raw_data["marketplace_auth"] = auth_dict
+
+        all_platforms = ["ozon", "wildberries", "yandex_market", "avito"]
+
+        if all_true:
+            for p in all_platforms:
+                auth_dict[p] = True
+        elif platforms:
+            for p in platforms:
+                if p in all_platforms:
+                    auth_dict[p] = True
+
+        for k, v in kwargs.items():
+            if k in all_platforms or k == "force_reauth":
+                auth_dict[k] = bool(v)
+
+        if reset_force and "force_reauth" not in kwargs:
+            auth_dict["force_reauth"] = False
+
+        with open(target_path, "w", encoding="utf-8") as f:
+            json.dump(raw_data, f, ensure_ascii=False, indent=2)
+
+        logger.success(f"✓ Блок marketplace_auth в {target_path.name} успешно обновлён: {auth_dict}")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении marketplace_auth в {target_path}: {e}")
+        return False

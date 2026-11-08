@@ -1,18 +1,27 @@
 """
-auth_setup.py — Модуль первичной каскадной авторизации на маркетплейсах через выделенный профиль Playwright
+auth_setup.py — Модуль гранулярного каскадного запуска авторизации на маркетплейсах через выделенный профиль Playwright
 (Dedicated Persistent Context).
 
 Поведение:
-  1. Запускает Google Chrome в выделенном каталоге chrome_automation_profile.
-  2. Каскадно открывает 4 соседние вкладки (context.new_page()) с паузой в 3 секунды:
-       - Вкладка 1 (Ozon): https://www.ozon.ru/ (пауза 3 сек)
-       - Вкладка 2 (Wildberries): https://www.wildberries.ru/ (пауза 3 сек)
-       - Вкладка 3 (Яндекс Маркет): https://market.yandex.ru/ (пауза 3 сек)
-       - Вкладка 4 (Avito): https://www.avito.ru/
-  3. Неблокирующая загрузка: используется wait_until="commit", ни одна площадка не ждет полной загрузки.
-  4. Ни одна из 4 вкладок не закрывается в процессе открытия.
-  5. Единое ожидание: терминал ожидает нажатия клавиши [ENTER] от пользователя.
-  6. Фиксация результата: создается маркерный файл .auth_ready (и .auth_confirmed) в каталоге профиля.
+  1. Читает блок marketplace_auth из main_config.json:
+       - ozon: bool
+       - wildberries: bool
+       - yandex_market: bool
+       - avito: bool
+       - force_reauth: bool
+  2. Запускает Google Chrome в выделенном каталоге chrome_automation_profile.
+  3. Открывает вкладки ТОЛЬКО для тех маркетплейсов, у которых флаг равен false (или для всех при force_reauth=True):
+       - Вкладка 1: Ozon (https://www.ozon.ru/) (пауза 3 сек)
+       - Вкладка 2: Wildberries (https://www.wildberries.ru/) (пауза 3 сек)
+       - Вкладка 3: Яндекс Маркет (https://market.yandex.ru/) (пауза 3 сек)
+       - Вкладка 4: Avito (https://www.avito.ru/)
+  4. Неблокирующая загрузка: используется wait_until="commit".
+  5. Ни одна из открытых вкладок не закрывается в процессе открытия.
+  6. Единое ожидание: терминал ожидает нажатия клавиши [ENTER] от пользователя.
+  7. После нажатия [ENTER]:
+       - Автоматически обновляет соответствующие флаги в main_config.json на true;
+       - Сбрасывает force_reauth в false;
+       - Создает маркерный файл .auth_ready (и .auth_confirmed) в каталоге профиля.
 
 Запуск вручную:
   python src/auth_setup.py
@@ -21,7 +30,7 @@ auth_setup.py — Модуль первичной каскадной автор�
 import sys
 import time
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple, Dict, Any
 
 from loguru import logger
 from playwright.sync_api import sync_playwright, BrowserContext, Page
@@ -31,34 +40,77 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent))
 
 import config as base_config
-from config_loader import load_config
+from config_loader import (
+    load_config,
+    update_marketplace_auth,
+    MarketplaceAuthConfig,
+)
 
-MARKETPLACE_TABS = [
-    ("Ozon", "https://www.ozon.ru/"),
-    ("Wildberries", "https://www.wildberries.ru/"),
-    ("Яндекс Маркет", "https://market.yandex.ru/"),
-    ("Avito", "https://www.avito.ru/"),
-]
+MARKETPLACE_CATALOG: Dict[str, Dict[str, str]] = {
+    "ozon": {
+        "name": "Ozon",
+        "url": "https://www.ozon.ru/",
+    },
+    "wildberries": {
+        "name": "Wildberries",
+        "url": "https://www.wildberries.ru/",
+    },
+    "yandex_market": {
+        "name": "Яндекс Маркет",
+        "url": "https://market.yandex.ru/",
+    },
+    "avito": {
+        "name": "Avito",
+        "url": "https://www.avito.ru/",
+    },
+}
 
-MARKETPLACE_URLS = dict(MARKETPLACE_TABS)
+ALL_PLATFORMS: List[str] = list(MARKETPLACE_CATALOG.keys())
+
+# Совместимость с предыдущими импортами
+MARKETPLACE_TABS = [(data["name"], data["url"]) for data in MARKETPLACE_CATALOG.values()]
+MARKETPLACE_URLS = {data["name"]: data["url"] for data in MARKETPLACE_CATALOG.values()}
 
 AUTH_MARKERS = [".auth_ready", ".auth_confirmed"]
 
-AUTH_MESSAGE = (
-    "\n" + "=" * 76 + "\n"
-    "  [АВТОРИЗАЦИЯ] В браузере открыты 4 соседние вкладки:\n"
-    "    1. Ozon:           https://www.ozon.ru/\n"
-    "    2. Wildberries:    https://www.wildberries.ru/\n"
-    "    3. Яндекс Маркет:  https://market.yandex.ru/\n"
-    "    4. Avito:          https://www.avito.ru/\n\n"
-    "  ИНСТРУКЦИЯ ДЛЯ ПОЛЬЗОВАТЕЛЯ:\n"
-    "  - Переключитесь в открытое окно Google Chrome;\n"
-    "  - Войдите в свои учетные записи во всех необходимых сервисах\n"
-    "    (по коду из SMS/Push, паролю или Ozon ID/WB ID);\n"
-    "  - Все вкладки остаются открытыми и загружаются параллельно;\n"
-    "  - После успешного входа вернитесь сюда и нажмите [ENTER].\n"
-    + "=" * 76 + "\n"
-)
+
+def format_auth_banner(
+    opened_platforms: List[str],
+    all_statuses: Optional[Dict[str, bool]] = None,
+) -> str:
+    """Формирует наглядный баннер с информацией о статусах площадок."""
+    lines = [
+        "\n" + "=" * 76,
+        "  [АВТОРИЗАЦИЯ] СТАТУС ВХОДА НА МАРКЕТПЛЕЙСАХ",
+        "=" * 76,
+    ]
+    for key, data in MARKETPLACE_CATALOG.items():
+        name = data["name"]
+        url = data["url"]
+        is_opened = key in opened_platforms
+        if is_opened:
+            status_str = "ТРЕБУЕТСЯ ВХОД (вкладка открыта)"
+        elif all_statuses and all_statuses.get(key, False):
+            status_str = "УЖЕ АВТОРИЗОВАН (пропущен)"
+        else:
+            status_str = "НЕ ТРЕБУЕТСЯ"
+        lines.append(f"  • {name:<15} [{status_str}]: {url}")
+
+    lines.extend([
+        "",
+        "  ИНСТРУКЦИЯ ДЛЯ ПОЛЬЗОВАТЕЛЯ:",
+        "  1. Переключитесь в открытое окно Google Chrome.",
+        "  2. Выполните вход в незалогиненных сервисах (по СМС, Пушу или ID).",
+        "  3. Все вкладки остаются открытыми и загружаются параллельно.",
+        "  4. После завершения вернитесь сюда и нажмите [ENTER].",
+        "  5. Статусы в main_config.json будут автоматически обновлены на true.",
+        "=" * 76 + "\n",
+    ])
+    return "\n".join(lines)
+
+
+# Сообщение по умолчанию для обратной совместимости
+AUTH_MESSAGE = format_auth_banner(ALL_PLATFORMS)
 
 
 def is_profile_authorized(profile_dir: Path) -> bool:
@@ -79,40 +131,53 @@ def mark_profile_authorized(profile_dir: Path) -> None:
             logger.warning(f"Не удалось записать маркер {marker}: {e}")
 
 
-def setup_all_marketplace_tabs(
+def setup_marketplace_tabs(
     context: BrowserContext,
+    platforms: Optional[List[str]] = None,
     delay_between_tabs: float = 3.0,
-) -> List[Page]:
+) -> Tuple[List[Page], List[str]]:
     """
-    Каскадный запуск 4 вкладок маркетплейсов в едином окне браузера:
-      - Вкладка 1 (Ozon): context.new_page() -> переход -> пауза 3 сек.
-      - Вкладка 2 (Wildberries): context.new_page() -> переход -> пауза 3 сек.
-      - Вкладка 3 (Яндекс Маркет): context.new_page() -> переход -> пауза 3 сек.
-      - Вкладка 4 (Avito): context.new_page() -> переход.
+    Каскадный запуск вкладок только для запрошенных платформ (platforms) с паузой 3 сек.:
+      - Открывает каждую вкладку через context.new_page();
+      - Ни одна из открытых вкладок не закрывается в процессе открытия;
+      - Неблокирующий переход: wait_until="commit";
+      - Пауза delay_between_tabs между соседними вкладками (кроме последней).
 
-    Каждый ресурс открывается строго в новой соседней вкладке (context.new_page()).
-    Ни одна из 4 открытых вкладок не закрывается в процессе открытия.
-    Использует wait_until="commit" для неблокирующей параллельной загрузки.
+    Возвращает (opened_pages, opened_platform_keys).
     """
+    if platforms is None:
+        target_keys = ALL_PLATFORMS
+    else:
+        target_keys = [p for p in platforms if p in MARKETPLACE_CATALOG]
+
+    if not target_keys:
+        logger.info("[АВТОРИЗАЦИЯ] Нет маркетплейсов для открытия вкладок.")
+        return [], []
+
     initial_blank_page: Optional[Page] = None
     if context.pages and context.pages[0].url in ("about:blank", ""):
         initial_blank_page = context.pages[0]
 
     opened_pages: List[Page] = []
-    total = len(MARKETPLACE_TABS)
+    opened_platforms: List[str] = []
+    total = len(target_keys)
 
-    for idx, (name, url) in enumerate(MARKETPLACE_TABS, start=1):
+    for idx, key in enumerate(target_keys, start=1):
+        item = MARKETPLACE_CATALOG[key]
+        name = item["name"]
+        url = item["url"]
+
         logger.info(f"[АВТОРИЗАЦИЯ] Вкладка {idx}/{total} ({name}): открытие новой вкладки и переход на {url}...")
         page = context.new_page()
         opened_pages.append(page)
+        opened_platforms.append(key)
 
         try:
             page.goto(url, wait_until="commit", timeout=30_000)
         except Exception as e:
             logger.warning(f"[АВТОРИЗАЦИЯ] Замечание при навигации на {name} ({url}): {e}")
 
-        # Если при старте браузера была создана дефолтная пустая вкладка about:blank,
-        # закрываем её после открытия первой рабочей вкладки, чтобы не оставлять лишний пустой таб.
+        # Закрываем начальную пустую вкладку браузера после открытия первой рабочей вкладки
         if initial_blank_page is not None:
             try:
                 initial_blank_page.close()
@@ -125,31 +190,61 @@ def setup_all_marketplace_tabs(
             logger.info(f"[АВТОРИЗАЦИЯ] Пауза {delay_between_tabs} сек. перед открытием следующей вкладки...")
             time.sleep(delay_between_tabs)
 
-    logger.success(f"✓ Все {len(opened_pages)} вкладки маркетплейсов открыты и загружаются параллельно.")
-    return opened_pages
+    names_str = ", ".join([MARKETPLACE_CATALOG[k]["name"] for k in opened_platforms])
+    logger.success(f"✓ Открыты и параллельно загружаются вкладки: {names_str}.")
+    return opened_pages, opened_platforms
+
+
+def setup_all_marketplace_tabs(
+    context: BrowserContext,
+    delay_between_tabs: float = 3.0,
+) -> List[Page]:
+    """
+    Обратная совместимость: открывает все 4 маркетплейса одновременно.
+    """
+    pages, _ = setup_marketplace_tabs(context, platforms=None, delay_between_tabs=delay_between_tabs)
+    return pages
 
 
 def run_auth_setup(
     profile_dir: Optional[Path] = None,
     channel: str = "chrome",
     headless: bool = False,
-    force: bool = True,
+    force: bool = False,
     delay_between_tabs: float = 3.0,
+    auth_config: Optional[MarketplaceAuthConfig] = None,
+    config_path: Optional[Path] = None,
 ) -> bool:
     """
-    Запускает Google Chrome под выделенным профилем автоматизации и открывает 4 вкладки маркетплейсов.
-    Ожидает нажатия [ENTER] от пользователя и сохраняет маркер .auth_ready.
+    Запускает Google Chrome под выделенным профилем автоматизации.
+    Открывает вкладки ТОЛЬКО для маркетплейсов с флагом false (или всех при force=True / force_reauth=True).
+    После нажатия [ENTER] автоматически обновляет флаги в main_config.json на true.
     """
+    if auth_config is None:
+        cfg = load_config(config_path)
+        auth_config = cfg.marketplace_auth
+        config_path = config_path or cfg.config_file_path
+
     target_profile_dir = profile_dir or (base_config.BASE_DIR / "chrome_automation_profile")
     target_profile_dir = Path(target_profile_dir).resolve()
     target_profile_dir.mkdir(parents=True, exist_ok=True)
 
-    if is_profile_authorized(target_profile_dir) and not force:
-        logger.info(f"✓ Профиль {target_profile_dir.name} уже авторизован (.auth_ready обнаружен).")
+    # Определяем, какие платформы требуют авторизации
+    if force or auth_config.force_reauth:
+        pending_platforms = ALL_PLATFORMS
+    else:
+        pending_platforms = auth_config.get_pending_marketplaces()
+
+    if not pending_platforms:
+        logger.info(
+            "✓ Все маркетплейсы уже авторизованы согласно main_config.json. "
+            "Открытие вкладок не требуется (для повторного входа укажите 'force_reauth': true в main_config.json)."
+        )
         return True
 
+    names_list = [MARKETPLACE_CATALOG[p]["name"] for p in pending_platforms]
     logger.info("=" * 76)
-    logger.info("  ЗАПУСК РЕЖИМА ПЕРВИЧНОЙ АВТОРИЗАЦИИ МАРКЕТПЛЕЙСОВ (4 ВКЛАДКИ)")
+    logger.info(f"  ЗАПУСК АВТОРИЗАЦИИ: требуется вход на {len(pending_platforms)} пл.: {', '.join(names_list)}")
     logger.info(f"  Профиль: {target_profile_dir}")
     logger.info("=" * 76)
 
@@ -180,25 +275,46 @@ def run_auth_setup(
             )
 
         try:
-            opened_pages = setup_all_marketplace_tabs(context, delay_between_tabs=delay_between_tabs)
+            opened_pages, opened_platforms = setup_marketplace_tabs(
+                context,
+                platforms=pending_platforms,
+                delay_between_tabs=delay_between_tabs,
+            )
 
-            print(AUTH_MESSAGE)
-            logger.warning("[АВТОРИЗАЦИЯ] Ожидание завершения авторизации пользователем во всех открытых вкладках...")
+            banner = format_auth_banner(opened_platforms, all_statuses=auth_config.to_dict())
+            print(banner)
+            logger.warning(
+                f"[АВТОРИЗАЦИЯ] Ожидание завершения авторизации пользователем "
+                f"({', '.join([MARKETPLACE_CATALOG[k]['name'] for k in opened_platforms])})..."
+            )
 
             try:
-                input(">>> После завершения входа во всех сервисах нажмите [ENTER]: ")
+                input(">>> После завершения входа во всех открытых сервисах нажмите [ENTER]: ")
             except (EOFError, OSError):
                 logger.debug("Консольный ввод недоступен (неинтерактивный режим).")
 
+            # 1. Автоматически обновляем флаги в main_config.json на true
+            update_marketplace_auth(
+                config_path=config_path,
+                platforms=opened_platforms,
+                reset_force=True,
+            )
+
+            # 2. Фиксируем маркер .auth_ready в профиле
             mark_profile_authorized(target_profile_dir)
 
+            # 3. Закрываем настроечные вкладки
             for page in opened_pages:
                 try:
                     page.close()
                 except Exception:
                     pass
 
-            logger.success(f"✓ Авторизация успешно зафиксирована в {target_profile_dir.name} (.auth_ready создан)!")
+            updated_names = ", ".join([MARKETPLACE_CATALOG[k]["name"] for k in opened_platforms])
+            logger.success(
+                f"✓ Авторизация для [{updated_names}] успешно зафиксирована! "
+                f"Флаги в main_config.json обновлены на true."
+            )
             return True
         finally:
             try:
@@ -210,4 +326,11 @@ def run_auth_setup(
 if __name__ == "__main__":
     cfg = load_config()
     p_dir = cfg.browser.resolve_profile_dir()
-    run_auth_setup(profile_dir=p_dir, channel=cfg.browser.channel, headless=cfg.browser.headless, force=True)
+    run_auth_setup(
+        profile_dir=p_dir,
+        channel=cfg.browser.channel,
+        headless=cfg.browser.headless,
+        force=False,
+        auth_config=cfg.marketplace_auth,
+        config_path=cfg.config_file_path,
+    )

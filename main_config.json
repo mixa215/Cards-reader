@@ -9,5 +9,12 @@
   "browser": {
     "profile_dir": "chrome_automation_profile",
     "headless": false
+  },
+  "marketplace_auth": {
+    "ozon": false,
+    "wildberries": false,
+    "yandex_market": false,
+    "avito": true,
+    "force_reauth": false
   }
 }

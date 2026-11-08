@@ -154,8 +154,9 @@ class TestBrowserPersistentManager(unittest.TestCase):
                 mock_input.assert_not_called()
                 mock_context.new_page.assert_not_called()
 
+    @patch("browser_manager.update_marketplace_auth")
     @patch("auth_setup.time.sleep")
-    def test_ensure_marketplaces_auth_new_session_creates_marker(self, mock_sleep):
+    def test_ensure_marketplaces_auth_new_session_creates_marker(self, mock_sleep, mock_update_auth):
         with tempfile.TemporaryDirectory() as td:
             cfg = BrowserConfig(profile_dir=td)
             manager = BrowserManager(cfg)
@@ -174,9 +175,11 @@ class TestBrowserPersistentManager(unittest.TestCase):
                 self.assertTrue(marker_file.exists())
                 self.assertTrue((manager.profile_dir / ".auth_confirmed").exists())
                 self.assertEqual(mock_page.close.call_count, 4)
+                mock_update_auth.assert_called_once()
 
+    @patch("browser_manager.update_marketplace_auth")
     @patch("auth_setup.time.sleep")
-    def test_check_or_request_auth_force_flag(self, mock_sleep):
+    def test_check_or_request_auth_force_flag(self, mock_sleep, mock_update_auth):
         with tempfile.TemporaryDirectory() as td:
             cfg = BrowserConfig(profile_dir=td)
             manager = BrowserManager(cfg)
@@ -193,10 +196,12 @@ class TestBrowserPersistentManager(unittest.TestCase):
                 res = manager.check_or_request_auth(mock_context, force=True)
                 self.assertTrue(res)
                 self.assertEqual(mock_page.close.call_count, 4)
+                mock_update_auth.assert_called_once()
 
+    @patch("auth_setup.update_marketplace_auth")
     @patch("auth_setup.time.sleep")
     @patch("auth_setup.sync_playwright")
-    def test_run_auth_setup_creates_marker(self, mock_sync_pw, mock_sleep):
+    def test_run_auth_setup_creates_marker(self, mock_sync_pw, mock_sleep, mock_update_auth):
         from auth_setup import run_auth_setup
 
         with tempfile.TemporaryDirectory() as td:
@@ -215,6 +220,142 @@ class TestBrowserPersistentManager(unittest.TestCase):
                 self.assertTrue((Path(td) / ".auth_confirmed").exists())
                 self.assertEqual(mock_page.goto.call_count, 4)
                 mock_context.close.assert_called_once()
+                mock_update_auth.assert_called_once()
+
+    @patch("auth_setup.time.sleep")
+    def test_granular_auth_opens_only_false_platforms(self, mock_sleep):
+        """
+        Проверяет, что при avito=True открываются только 3 оставшиеся вкладки (Ozon, WB, YM),
+        а Avito не открывается. После подтверждения флаги обновляются на true.
+        """
+        from config_loader import MarketplaceAuthConfig, update_marketplace_auth
+
+        with tempfile.TemporaryDirectory() as td:
+            config_file = Path(td) / "main_config.json"
+            initial_cfg = {
+                "marketplace_auth": {
+                    "ozon": False,
+                    "wildberries": False,
+                    "yandex_market": False,
+                    "avito": True,
+                    "force_reauth": False
+                }
+            }
+            config_file.write_text(json.dumps(initial_cfg), encoding="utf-8")
+
+            app_cfg = AppConfig(
+                browser=BrowserConfig(profile_dir=td),
+                marketplace_auth=MarketplaceAuthConfig(
+                    ozon=False,
+                    wildberries=False,
+                    yandex_market=False,
+                    avito=True,
+                    force_reauth=False,
+                    _is_explicit=True,
+                ),
+                config_file_path=config_file,
+            )
+            manager = BrowserManager(app_cfg)
+
+            mock_context = MagicMock()
+            mock_context.pages = []
+            mock_page = MagicMock()
+            mock_context.new_page.return_value = mock_page
+
+            with patch("builtins.input", return_value=""):
+                res = manager.ensure_marketplaces_auth(mock_context)
+                self.assertTrue(res)
+                # Должно открыться ровно 3 вкладки, а не 4
+                self.assertEqual(mock_page.goto.call_count, 3)
+                opened_urls = [call[0][0] for call in mock_page.goto.call_args_list]
+                self.assertIn("https://www.ozon.ru/", opened_urls)
+                self.assertIn("https://www.wildberries.ru/", opened_urls)
+                self.assertIn("https://market.yandex.ru/", opened_urls)
+                self.assertNotIn("https://www.avito.ru/", opened_urls)
+
+                # Проверяем, что в config_file обновились флаги на true
+                saved_data = json.loads(config_file.read_text(encoding="utf-8"))
+                auth_data = saved_data["marketplace_auth"]
+                self.assertTrue(auth_data["ozon"])
+                self.assertTrue(auth_data["wildberries"])
+                self.assertTrue(auth_data["yandex_market"])
+                self.assertTrue(auth_data["avito"])
+                self.assertFalse(auth_data["force_reauth"])
+
+    def test_granular_auth_all_true_skips(self):
+        """
+        Проверяет, что если все 4 маркетплейса равны true, браузер не открывает вкладки.
+        """
+        from config_loader import MarketplaceAuthConfig
+
+        with tempfile.TemporaryDirectory() as td:
+            app_cfg = AppConfig(
+                browser=BrowserConfig(profile_dir=td),
+                marketplace_auth=MarketplaceAuthConfig(
+                    ozon=True,
+                    wildberries=True,
+                    yandex_market=True,
+                    avito=True,
+                    force_reauth=False,
+                    _is_explicit=True,
+                ),
+            )
+            manager = BrowserManager(app_cfg)
+            mock_context = MagicMock()
+
+            with patch("builtins.input") as mock_input:
+                res = manager.ensure_marketplaces_auth(mock_context)
+                self.assertTrue(res)
+                mock_input.assert_not_called()
+                mock_context.new_page.assert_not_called()
+
+    @patch("auth_setup.time.sleep")
+    def test_force_reauth_opens_all_and_resets(self, mock_sleep):
+        """
+        Проверяет, что при force_reauth=True открываются все 4 вкладки, даже если все true,
+        и флаг force_reauth сбрасывается в false.
+        """
+        from config_loader import MarketplaceAuthConfig
+
+        with tempfile.TemporaryDirectory() as td:
+            config_file = Path(td) / "main_config.json"
+            initial_cfg = {
+                "marketplace_auth": {
+                    "ozon": True,
+                    "wildberries": True,
+                    "yandex_market": True,
+                    "avito": True,
+                    "force_reauth": True
+                }
+            }
+            config_file.write_text(json.dumps(initial_cfg), encoding="utf-8")
+
+            app_cfg = AppConfig(
+                browser=BrowserConfig(profile_dir=td),
+                marketplace_auth=MarketplaceAuthConfig(
+                    ozon=True,
+                    wildberries=True,
+                    yandex_market=True,
+                    avito=True,
+                    force_reauth=True,
+                    _is_explicit=True,
+                ),
+                config_file_path=config_file,
+            )
+            manager = BrowserManager(app_cfg)
+            mock_context = MagicMock()
+            mock_context.pages = []
+            mock_page = MagicMock()
+            mock_context.new_page.return_value = mock_page
+
+            with patch("builtins.input", return_value=""):
+                res = manager.ensure_marketplaces_auth(mock_context)
+                self.assertTrue(res)
+                # Открываются все 4 вкладки
+                self.assertEqual(mock_page.goto.call_count, 4)
+
+                saved_data = json.loads(config_file.read_text(encoding="utf-8"))
+                self.assertFalse(saved_data["marketplace_auth"]["force_reauth"])
 
     def test_ensure_chrome_ready_creates_dir(self):
         with tempfile.TemporaryDirectory() as td:
