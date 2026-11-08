@@ -37,4 +37,5 @@ downloads/pages_cache/*_files/
 .chrome_bot_profile/
 chrome_automation_profile/
 .auth_confirmed
+.auth_ready
 

@@ -95,7 +95,8 @@ class TestBrowserPersistentManager(unittest.TestCase):
             self.assertNotIn("channel", second_call_kwargs)
             self.assertEqual(ctx, mock_context)
 
-    def test_setup_all_marketplace_tabs(self):
+    @patch("auth_setup.time.sleep")
+    def test_setup_all_marketplace_tabs(self, mock_sleep):
         with tempfile.TemporaryDirectory() as td:
             cfg = BrowserConfig(profile_dir=td)
             manager = BrowserManager(cfg)
@@ -109,31 +110,57 @@ class TestBrowserPersistentManager(unittest.TestCase):
             self.assertEqual(len(pages), 4)
             self.assertEqual(mock_page.goto.call_count, 4)
 
+            # Проверяем, что пауза 3 секунды вызвана ровно 3 раза (после вкладок 1, 2, 3)
+            self.assertEqual(mock_sleep.call_count, 3)
+            for call in mock_sleep.call_args_list:
+                self.assertEqual(call[0][0], 3.0)
+
             # Проверяем, что передавался параметр wait_until="commit"
             for call in mock_page.goto.call_args_list:
                 self.assertEqual(call[1]["wait_until"], "commit")
 
-    def test_check_or_request_auth_existing_marker(self):
+    @patch("auth_setup.time.sleep")
+    def test_setup_all_marketplace_tabs_closes_initial_blank_page(self, mock_sleep):
         with tempfile.TemporaryDirectory() as td:
             cfg = BrowserConfig(profile_dir=td)
             manager = BrowserManager(cfg)
 
-            marker_file = manager.profile_dir / ".auth_confirmed"
-            marker_file.write_text("confirmed", encoding="utf-8")
+            mock_initial_page = MagicMock()
+            mock_initial_page.url = "about:blank"
+            mock_context = MagicMock()
+            mock_context.pages = [mock_initial_page]
+            mock_page = MagicMock()
+            mock_context.new_page.return_value = mock_page
+
+            pages = manager.setup_all_marketplace_tabs(mock_context)
+            self.assertEqual(len(pages), 4)
+            # Начальная пустая вкладка должна быть закрыта
+            mock_initial_page.close.assert_called_once()
+            # Сами открытые 4 вкладки не должны закрываться в процессе открытия
+            mock_page.close.assert_not_called()
+
+    def test_ensure_marketplaces_auth_existing_marker(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = BrowserConfig(profile_dir=td)
+            manager = BrowserManager(cfg)
+
+            marker_file = manager.profile_dir / ".auth_ready"
+            marker_file.write_text("ready", encoding="utf-8")
 
             mock_context = MagicMock()
             with patch("builtins.input") as mock_input:
-                res = manager.check_or_request_auth(mock_context)
+                res = manager.ensure_marketplaces_auth(mock_context)
                 self.assertTrue(res)
                 mock_input.assert_not_called()
                 mock_context.new_page.assert_not_called()
 
-    def test_check_or_request_auth_new_session_creates_marker(self):
+    @patch("auth_setup.time.sleep")
+    def test_ensure_marketplaces_auth_new_session_creates_marker(self, mock_sleep):
         with tempfile.TemporaryDirectory() as td:
             cfg = BrowserConfig(profile_dir=td)
             manager = BrowserManager(cfg)
 
-            marker_file = manager.profile_dir / ".auth_confirmed"
+            marker_file = manager.profile_dir / ".auth_ready"
             self.assertFalse(marker_file.exists())
 
             mock_context = MagicMock()
@@ -142,17 +169,19 @@ class TestBrowserPersistentManager(unittest.TestCase):
             mock_context.new_page.return_value = mock_page
 
             with patch("builtins.input", return_value=""):
-                res = manager.check_or_request_auth(mock_context)
+                res = manager.ensure_marketplaces_auth(mock_context)
                 self.assertTrue(res)
                 self.assertTrue(marker_file.exists())
+                self.assertTrue((manager.profile_dir / ".auth_confirmed").exists())
                 self.assertEqual(mock_page.close.call_count, 4)
 
-    def test_check_or_request_auth_force_flag(self):
+    @patch("auth_setup.time.sleep")
+    def test_check_or_request_auth_force_flag(self, mock_sleep):
         with tempfile.TemporaryDirectory() as td:
             cfg = BrowserConfig(profile_dir=td)
             manager = BrowserManager(cfg)
 
-            marker_file = manager.profile_dir / ".auth_confirmed"
+            marker_file = manager.profile_dir / ".auth_ready"
             marker_file.write_text("old_auth", encoding="utf-8")
 
             mock_context = MagicMock()
@@ -165,8 +194,9 @@ class TestBrowserPersistentManager(unittest.TestCase):
                 self.assertTrue(res)
                 self.assertEqual(mock_page.close.call_count, 4)
 
+    @patch("auth_setup.time.sleep")
     @patch("auth_setup.sync_playwright")
-    def test_run_auth_setup_creates_marker(self, mock_sync_pw):
+    def test_run_auth_setup_creates_marker(self, mock_sync_pw, mock_sleep):
         from auth_setup import run_auth_setup
 
         with tempfile.TemporaryDirectory() as td:
@@ -181,6 +211,7 @@ class TestBrowserPersistentManager(unittest.TestCase):
             with patch("builtins.input", return_value=""):
                 success = run_auth_setup(profile_dir=Path(td), force=True)
                 self.assertTrue(success)
+                self.assertTrue((Path(td) / ".auth_ready").exists())
                 self.assertTrue((Path(td) / ".auth_confirmed").exists())
                 self.assertEqual(mock_page.goto.call_count, 4)
                 mock_context.close.assert_called_once()

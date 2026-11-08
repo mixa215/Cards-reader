@@ -190,7 +190,7 @@ class ChromeProfileDownloader:
 
             try:
                 # Режим первичной авторизации: проверяет профиль и при необходимости ждет входа
-                self.browser_manager.check_or_request_auth(context)
+                self.browser_manager.ensure_marketplaces_auth(context)
 
                 for idx, url in enumerate(urls, start=1):
                     logger.info(f"[{idx}/{len(urls)}] Обработка: {url}")

@@ -8,9 +8,13 @@ browser_manager.py — Модуль управления браузером че
      - channel="chrome" (системный Google Chrome, а не Chromium);
      - headless=False (визуальный запуск на экране);
      - args=["--no-first-run", "--no-default-browser-check", "--start-maximized"];
-     - ignore_default_args=["--enable-automation"] (без плашки автоматизации и без --no-sandbox).
-  3. Первичная авторизация (check_or_request_auth):
-     - При первом запуске скрипт ожидает ручного входа пользователя и сохраняет куки в профиле.
+     - ignore_default_args=["--enable-automation"] (без плашки автоматизации и без --no-sandbox);
+     - no_viewport=True.
+  3. Первичная авторизация (ensure_marketplaces_auth):
+     - Каскадный неблокирующий запуск 4 вкладок (Ozon, Wildberries, Яндекс Маркет, Avito) с паузой 3 секунды;
+     - Ни одна из вкладок не закрывается в процессе открытия;
+     - Единое ожидание ввода [ENTER] пользователем после открытия всех вкладок;
+     - Фиксация статуса в маркере .auth_ready (и .auth_confirmed) в каталоге профиля.
   4. Полная изоляция от пользовательского Chrome: никаких taskkill, портов CDP 9222/9225 и конфликтов блокировок.
 """
 import os
@@ -18,14 +22,23 @@ import sys
 import time
 import json
 from pathlib import Path
-from typing import Optional, Tuple, Any, Union
+from typing import Optional, Tuple, Any, Union, List
 
 from loguru import logger
 from playwright.sync_api import Playwright, BrowserContext, Page
 
 from config_loader import BrowserConfig, AppConfig
 import config as base_config
-from auth_setup import MARKETPLACE_URLS, setup_all_marketplace_tabs, AUTH_MESSAGE
+from auth_setup import (
+    MARKETPLACE_TABS,
+    MARKETPLACE_URLS,
+    AUTH_MESSAGE,
+    AUTH_MARKERS,
+    setup_all_marketplace_tabs,
+    is_profile_authorized,
+    mark_profile_authorized,
+    run_auth_setup,
+)
 
 
 class BrowserManager:
@@ -47,6 +60,10 @@ class BrowserManager:
         self.headless: bool = getattr(self.browser_config, "headless", False)
         self.channel: str = getattr(self.browser_config, "channel", "chrome")
 
+        # Маркерные файлы авторизации
+        self.auth_marker_ready: Path = self.profile_dir / ".auth_ready"
+        self.auth_marker_confirmed: Path = self.profile_dir / ".auth_confirmed"
+
         # Атрибуты обратной совместимости
         self.user_data_dir: Path = self.profile_dir
         self.profile_directory: str = getattr(self.browser_config, "profile_directory", "Default")
@@ -54,6 +71,10 @@ class BrowserManager:
         self.cdp_url: str = getattr(self.browser_config, "cdp_url", f"http://127.0.0.1:{self.port}")
         self.chrome_exe: Path = self.browser_config.resolve_chrome_exe()
         self.force_restart_chrome: bool = False
+
+    def is_auth_ready(self) -> bool:
+        """Проверяет наличие маркера авторизации в каталоге профиля."""
+        return is_profile_authorized(self.profile_dir)
 
     def ensure_chrome_ready(self) -> bool:
         """
@@ -107,51 +128,62 @@ class BrowserManager:
             )
             return context, context
 
-    def setup_all_marketplace_tabs(self, context: BrowserContext) -> list[Page]:
+    def setup_all_marketplace_tabs(
+        self,
+        context: BrowserContext,
+        delay_between_tabs: float = 3.0,
+    ) -> List[Page]:
         """
-        Открывает 4 вкладки со всеми целевыми маркетплейсами одновременно:
+        Каскадно открывает 4 вкладки со всеми целевыми маркетплейсами с паузой 3 сек.:
           - Ozon: https://www.ozon.ru/
           - Wildberries: https://www.wildberries.ru/
           - Яндекс Маркет: https://market.yandex.ru/
           - Avito: https://www.avito.ru/
+        Ни одна из открытых вкладок не закрывается в процессе открытия.
         """
-        return setup_all_marketplace_tabs(context)
+        return setup_all_marketplace_tabs(context, delay_between_tabs=delay_between_tabs)
 
-    def check_or_request_auth(
+    def ensure_marketplaces_auth(
         self,
-        context: BrowserContext,
+        context: Optional[BrowserContext] = None,
         force: bool = False,
-        test_url: Optional[str] = None,
+        delay_between_tabs: float = 3.0,
     ) -> bool:
         """
-        Режим первичной настройки/авторизации:
-          1. Если файл-маркер .auth_confirmed существует и force=False, этап пропускается.
+        Процедура первичной авторизации пользователя на 4 маркетплейсах:
+          1. Если маркер .auth_ready (или .auth_confirmed) существует и force=False,
+             этап пропускается (для штатных периодических запусков).
           2. Если авторизация требуется (или force=True):
-             - Открывает 4 вкладки (Ozon, Wildberries, Яндекс Маркет, Avito) через setup_all_marketplace_tabs;
-             - Выводит в терминал сообщение с разделителями;
-             - Ожидает нажатия [ENTER] от пользователя;
-             - Сохраняет файл-маркер .auth_confirmed;
-             - Закрывает 4 настроечные вкладки перед стартом выгрузки товаров.
+             - При отсутствии переданного контекста запускает изолированную сессию run_auth_setup;
+             - В переданном контексте каскадно открывает 4 вкладки с задержкой 3 сек. (setup_all_marketplace_tabs);
+             - Выводит пользователю четкую инструкцию и ожидает нажатия [ENTER];
+             - Создает маркерный файл .auth_ready (и .auth_confirmed) в chrome_automation_profile;
+             - Закрывает настроечные вкладки перед стартом выгрузки товаров.
         """
-        auth_marker = self.profile_dir / ".auth_confirmed"
-        if auth_marker.exists() and not force and not test_url:
-            logger.info("✓ Профиль автоматизации уже авторизован (.auth_confirmed обнаружен).")
+        if self.is_auth_ready() and not force:
+            logger.info("✓ Профиль автоматизации уже авторизован (.auth_ready обнаружен).")
             return True
 
-        opened_pages = self.setup_all_marketplace_tabs(context)
+        if context is None:
+            return run_auth_setup(
+                profile_dir=self.profile_dir,
+                channel=self.channel,
+                headless=self.headless,
+                force=force,
+                delay_between_tabs=delay_between_tabs,
+            )
+
+        opened_pages = self.setup_all_marketplace_tabs(context, delay_between_tabs=delay_between_tabs)
 
         print(AUTH_MESSAGE)
-        logger.warning("[АВТОРИЗАЦИЯ] Ожидание завершения авторизации пользователем в 4 открытых вкладках...")
+        logger.warning("[АВТОРИЗАЦИЯ] Ожидание завершения авторизации пользователем во всех открытых вкладках...")
 
         try:
             input(">>> После завершения входа во всех сервисах нажмите [ENTER]: ")
         except (EOFError, OSError):
             logger.debug("Консольный ввод недоступен (неинтерактивный режим).")
 
-        try:
-            auth_marker.write_text(f"Auth confirmed at {time.ctime()}\n", encoding="utf-8")
-        except Exception as e:
-            logger.warning(f"Не удалось записать файл .auth_confirmed: {e}")
+        mark_profile_authorized(self.profile_dir)
 
         # Закрываем настроечные вкладки перед стартом парсинга товаров
         for page in opened_pages:
@@ -160,8 +192,26 @@ class BrowserManager:
             except Exception:
                 pass
 
-        logger.success("✓ Авторизация на всех 4 площадках подтверждена и сохранена в chrome_automation_profile!")
+        logger.success(f"✓ Авторизация на всех 4 площадках подтверждена и зафиксирована (.auth_ready в {self.profile_dir.name})!")
         return True
+
+    def check_or_request_auth(
+        self,
+        context: Optional[BrowserContext] = None,
+        force: bool = False,
+        test_url: Optional[str] = None,
+        delay_between_tabs: float = 3.0,
+    ) -> bool:
+        """
+        Псевдоним обратной совместимости для ensure_marketplaces_auth.
+        """
+        if test_url:
+            force = True
+        return self.ensure_marketplaces_auth(
+            context=context,
+            force=force,
+            delay_between_tabs=delay_between_tabs,
+        )
 
     def close(self, context: Optional[BrowserContext] = None, browser: Optional[Any] = None) -> None:
         """
