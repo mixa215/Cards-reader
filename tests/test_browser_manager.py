@@ -66,9 +66,11 @@ class TestBrowserPersistentManager(unittest.TestCase):
             self.assertTrue(call_kwargs["no_viewport"])
 
             args = call_kwargs["args"]
+            self.assertIn("--disable-blink-features=AutomationControlled", args)
             self.assertIn("--no-first-run", args)
             self.assertIn("--no-default-browser-check", args)
             self.assertIn("--start-maximized", args)
+            self.assertIn("--lang=ru-RU,ru", args)
 
             # Строгий запрет на флаги, ломающие DPAPI и триггерящие защиту
             self.assertNotIn("--no-sandbox", args)
@@ -281,6 +283,83 @@ class TestBrowserPersistentManager(unittest.TestCase):
                 self.assertTrue(auth_data["yandex_market"])
                 self.assertTrue(auth_data["avito"])
                 self.assertFalse(auth_data["force_reauth"])
+
+    @patch("auth_setup.time.sleep")
+    def test_granular_auth_opens_only_ozon_and_wb(self, mock_sleep):
+        """
+        Проверяет изолированную доавторизацию: при avito=True и yandex_market=True
+        открываются ТОЛЬКО Ozon и Wildberries (ровно 2 вкладки).
+        """
+        from config_loader import MarketplaceAuthConfig
+
+        with tempfile.TemporaryDirectory() as td:
+            config_file = Path(td) / "main_config.json"
+            initial_cfg = {
+                "marketplace_auth": {
+                    "ozon": False,
+                    "wildberries": False,
+                    "yandex_market": True,
+                    "avito": True,
+                    "force_reauth": False
+                }
+            }
+            config_file.write_text(json.dumps(initial_cfg), encoding="utf-8")
+
+            app_cfg = AppConfig(
+                browser=BrowserConfig(profile_dir=td),
+                marketplace_auth=MarketplaceAuthConfig(
+                    ozon=False,
+                    wildberries=False,
+                    yandex_market=True,
+                    avito=True,
+                    force_reauth=False,
+                    _is_explicit=True,
+                ),
+                config_file_path=config_file,
+            )
+            manager = BrowserManager(app_cfg)
+
+            mock_context = MagicMock()
+            mock_context.pages = []
+            mock_page = MagicMock()
+            mock_context.new_page.return_value = mock_page
+
+            with patch("builtins.input", return_value=""):
+                res = manager.ensure_marketplaces_auth(mock_context)
+                self.assertTrue(res)
+                # Должно открыться ровно 2 вкладки: Ozon и Wildberries
+                self.assertEqual(mock_page.goto.call_count, 2)
+                opened_urls = [call[0][0] for call in mock_page.goto.call_args_list]
+                self.assertIn("https://www.ozon.ru/", opened_urls)
+                self.assertIn("https://www.wildberries.ru/", opened_urls)
+                self.assertNotIn("https://market.yandex.ru/", opened_urls)
+                self.assertNotIn("https://www.avito.ru/", opened_urls)
+
+                # Проверяем, что в config_file обновились флаги ozon и wildberries на true
+                saved_data = json.loads(config_file.read_text(encoding="utf-8"))
+                auth_data = saved_data["marketplace_auth"]
+                self.assertTrue(auth_data["ozon"])
+                self.assertTrue(auth_data["wildberries"])
+                self.assertTrue(auth_data["yandex_market"])
+                self.assertTrue(auth_data["avito"])
+
+    def test_apply_stealth_integration(self):
+        """
+        Проверяет, что модуль browser_stealth инжектирует init-скрипт и вызывает playwright-stealth.
+        """
+        from browser_stealth import apply_stealth, STEALTH_CHROME_ARGS, STEALTH_IGNORE_DEFAULT_ARGS
+        self.assertIn("--disable-blink-features=AutomationControlled", STEALTH_CHROME_ARGS)
+        self.assertIn("--lang=ru-RU,ru", STEALTH_CHROME_ARGS)
+        self.assertIn("--enable-automation", STEALTH_IGNORE_DEFAULT_ARGS)
+
+        mock_target = MagicMock()
+        apply_stealth(mock_target)
+        mock_target.add_init_script.assert_called_once()
+        script_arg = mock_target.add_init_script.call_args[0][0]
+        self.assertIn("navigator, 'webdriver'", script_arg)
+        self.assertIn("window.chrome.runtime", script_arg)
+        self.assertIn("navigator, 'plugins'", script_arg)
+        self.assertIn("['ru-RU', 'ru', 'en-US']", script_arg)
 
     def test_granular_auth_all_true_skips(self):
         """

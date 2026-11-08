@@ -36,6 +36,11 @@ from config_loader import (
     update_marketplace_auth,
 )
 import config as base_config
+from browser_stealth import (
+    apply_stealth,
+    STEALTH_CHROME_ARGS,
+    STEALTH_IGNORE_DEFAULT_ARGS,
+)
 from auth_setup import (
     MARKETPLACE_CATALOG,
     ALL_PLATFORMS,
@@ -119,11 +124,8 @@ class BrowserManager:
             f"  Headless: {self.headless}"
         )
 
-        args = [
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--start-maximized",
-        ]
+        args = list(STEALTH_CHROME_ARGS)
+        ignore_default_args = list(STEALTH_IGNORE_DEFAULT_ARGS)
 
         try:
             context = pw.chromium.launch_persistent_context(
@@ -131,10 +133,11 @@ class BrowserManager:
                 channel=self.channel,
                 headless=self.headless,
                 args=args,
-                ignore_default_args=["--enable-automation"],
+                ignore_default_args=ignore_default_args,
                 no_viewport=True,
             )
-            logger.success("✓ Сессия Google Chrome под выделенным профилем успешно запущена")
+            apply_stealth(context)
+            logger.success("✓ Сессия Google Chrome под выделенным профилем успешно запущена (Stealth активен)")
             return context, context
         except Exception as e:
             logger.error(f"Не удалось запустить Google Chrome по каналу '{self.channel}': {e}")
@@ -143,9 +146,10 @@ class BrowserManager:
                 user_data_dir=str(self.profile_dir),
                 headless=self.headless,
                 args=args,
-                ignore_default_args=["--enable-automation"],
+                ignore_default_args=ignore_default_args,
                 no_viewport=True,
             )
+            apply_stealth(context)
             return context, context
 
     def setup_marketplace_tabs(

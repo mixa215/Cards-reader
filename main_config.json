@@ -13,7 +13,7 @@
   "marketplace_auth": {
     "ozon": false,
     "wildberries": false,
-    "yandex_market": false,
+    "yandex_market": true,
     "avito": true,
     "force_reauth": false
   }

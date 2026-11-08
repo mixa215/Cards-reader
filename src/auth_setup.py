@@ -45,6 +45,11 @@ from config_loader import (
     update_marketplace_auth,
     MarketplaceAuthConfig,
 )
+from browser_stealth import (
+    apply_stealth,
+    STEALTH_CHROME_ARGS,
+    STEALTH_IGNORE_DEFAULT_ARGS,
+)
 
 MARKETPLACE_CATALOG: Dict[str, Dict[str, str]] = {
     "ozon": {
@@ -169,6 +174,7 @@ def setup_marketplace_tabs(
 
         logger.info(f"[АВТОРИЗАЦИЯ] Вкладка {idx}/{total} ({name}): открытие новой вкладки и переход на {url}...")
         page = context.new_page()
+        apply_stealth(page)
         opened_pages.append(page)
         opened_platforms.append(key)
 
@@ -214,10 +220,12 @@ def run_auth_setup(
     delay_between_tabs: float = 3.0,
     auth_config: Optional[MarketplaceAuthConfig] = None,
     config_path: Optional[Path] = None,
+    platforms: Optional[List[str]] = None,
 ) -> bool:
     """
     Запускает Google Chrome под выделенным профилем автоматизации.
-    Открывает вкладки ТОЛЬКО для маркетплейсов с флагом false (или всех при force=True / force_reauth=True).
+    Открывает вкладки ТОЛЬКО для маркетплейсов с флагом false (или всех при force=True / force_reauth=True,
+    либо указанных в platforms).
     После нажатия [ENTER] автоматически обновляет флаги в main_config.json на true.
     """
     if auth_config is None:
@@ -230,7 +238,9 @@ def run_auth_setup(
     target_profile_dir.mkdir(parents=True, exist_ok=True)
 
     # Определяем, какие платформы требуют авторизации
-    if force or auth_config.force_reauth:
+    if platforms:
+        pending_platforms = [p for p in platforms if p in MARKETPLACE_CATALOG]
+    elif force or auth_config.force_reauth:
         pending_platforms = ALL_PLATFORMS
     else:
         pending_platforms = auth_config.get_pending_marketplaces()
@@ -248,11 +258,7 @@ def run_auth_setup(
     logger.info(f"  Профиль: {target_profile_dir}")
     logger.info("=" * 76)
 
-    args = [
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--start-maximized",
-    ]
+    args = list(STEALTH_CHROME_ARGS)
 
     with sync_playwright() as p:
         try:
@@ -261,7 +267,7 @@ def run_auth_setup(
                 channel=channel,
                 headless=headless,
                 args=args,
-                ignore_default_args=["--enable-automation"],
+                ignore_default_args=list(STEALTH_IGNORE_DEFAULT_ARGS),
                 no_viewport=True,
             )
         except Exception as e:
@@ -270,9 +276,12 @@ def run_auth_setup(
                 user_data_dir=str(target_profile_dir),
                 headless=headless,
                 args=args,
-                ignore_default_args=["--enable-automation"],
+                ignore_default_args=list(STEALTH_IGNORE_DEFAULT_ARGS),
                 no_viewport=True,
             )
+
+        # Применяем Stealth-маскировку на уровне контекста
+        apply_stealth(context)
 
         try:
             opened_pages, opened_platforms = setup_marketplace_tabs(
@@ -324,13 +333,26 @@ def run_auth_setup(
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Авторизация на маркетплейсах под выделенным профилем")
+    parser.add_argument("--force", action="store_true", help="Принудительно открыть все 4 площадки")
+    parser.add_argument(
+        "--platforms",
+        nargs="+",
+        choices=["ozon", "wildberries", "yandex_market", "avito"],
+        default=None,
+        help="Задать конкретные маркетплейсы для доавторизации (например, --platforms ozon wildberries)",
+    )
+    cli_args = parser.parse_args()
+
     cfg = load_config()
     p_dir = cfg.browser.resolve_profile_dir()
     run_auth_setup(
         profile_dir=p_dir,
         channel=cfg.browser.channel,
         headless=cfg.browser.headless,
-        force=False,
+        force=cli_args.force,
+        platforms=cli_args.platforms,
         auth_config=cfg.marketplace_auth,
         config_path=cfg.config_file_path,
     )
