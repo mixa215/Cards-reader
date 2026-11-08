@@ -351,15 +351,13 @@ def main() -> None:
 
     cfg = load_config(args.config)
     if args.auth:
-        from playwright.sync_api import sync_playwright
-        from browser_manager import BrowserManager
-        bm = BrowserManager(cfg)
-        with sync_playwright() as pw:
-            context, _ = bm.get_context(pw)
-            try:
-                bm.check_or_request_auth(context, force=True)
-            finally:
-                bm.close(context)
+        from auth_setup import run_auth_setup
+        run_auth_setup(
+            profile_dir=cfg.browser.resolve_profile_dir(),
+            channel=cfg.browser.channel,
+            headless=cfg.browser.headless,
+            force=True,
+        )
         return
     if args.interval and args.interval > 0:
         cfg.check_interval_minutes = args.interval

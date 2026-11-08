@@ -165,6 +165,26 @@ class TestBrowserPersistentManager(unittest.TestCase):
                 self.assertTrue(res)
                 self.assertEqual(mock_page.close.call_count, 4)
 
+    @patch("auth_setup.sync_playwright")
+    def test_run_auth_setup_creates_marker(self, mock_sync_pw):
+        from auth_setup import run_auth_setup
+
+        with tempfile.TemporaryDirectory() as td:
+            mock_pw_instance = MagicMock()
+            mock_sync_pw.return_value.__enter__.return_value = mock_pw_instance
+            mock_context = MagicMock()
+            mock_context.pages = []
+            mock_page = MagicMock()
+            mock_context.new_page.return_value = mock_page
+            mock_pw_instance.chromium.launch_persistent_context.return_value = mock_context
+
+            with patch("builtins.input", return_value=""):
+                success = run_auth_setup(profile_dir=Path(td), force=True)
+                self.assertTrue(success)
+                self.assertTrue((Path(td) / ".auth_confirmed").exists())
+                self.assertEqual(mock_page.goto.call_count, 4)
+                mock_context.close.assert_called_once()
+
     def test_ensure_chrome_ready_creates_dir(self):
         with tempfile.TemporaryDirectory() as td:
             custom_dir = Path(td) / "sub" / "automation_profile"

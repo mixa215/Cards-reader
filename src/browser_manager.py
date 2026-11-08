@@ -25,14 +25,7 @@ from playwright.sync_api import Playwright, BrowserContext, Page
 
 from config_loader import BrowserConfig, AppConfig
 import config as base_config
-
-
-MARKETPLACE_URLS = {
-    "Ozon": "https://www.ozon.ru/",
-    "Wildberries": "https://www.wildberries.ru/",
-    "Яндекс Маркет": "https://market.yandex.ru/",
-    "Avito": "https://www.avito.ru/",
-}
+from auth_setup import MARKETPLACE_URLS, setup_all_marketplace_tabs, AUTH_MESSAGE
 
 
 class BrowserManager:
@@ -121,23 +114,8 @@ class BrowserManager:
           - Wildberries: https://www.wildberries.ru/
           - Яндекс Маркет: https://market.yandex.ru/
           - Avito: https://www.avito.ru/
-        Использует wait_until="commit" для быстрой отрисовки без зависания на фоновой аналитике.
         """
-        opened_pages = []
-        for name, url in MARKETPLACE_URLS.items():
-            logger.info(f"[АВТОРИЗАЦИЯ] Открытие вкладки {name}: {url}")
-            try:
-                # Если уже открыта пустая страница about:blank, используем её
-                if not opened_pages and context.pages and context.pages[0].url in ("about:blank", ""):
-                    page = context.pages[0]
-                else:
-                    page = context.new_page()
-                opened_pages.append(page)
-                page.goto(url, wait_until="commit", timeout=30_000)
-            except Exception as e:
-                logger.warning(f"[АВТОРИЗАЦИЯ] Замечание при открытии {name} ({url}): {e}")
-
-        return opened_pages
+        return setup_all_marketplace_tabs(context)
 
     def check_or_request_auth(
         self,
@@ -162,14 +140,7 @@ class BrowserManager:
 
         opened_pages = self.setup_all_marketplace_tabs(context)
 
-        message = (
-            "\n" + "=" * 70 + "\n"
-            "[АВТОРИЗАЦИЯ] Открыты 4 вкладки: Ozon, Wildberries, Яндекс Маркет, Avito.\n"
-            "Войдите в свои аккаунты во всех нужных сервисах.\n"
-            "После завершения входа вернитесь сюда и нажмите [ENTER] для запуска сбора...\n"
-            + "=" * 70 + "\n"
-        )
-        print(message)
+        print(AUTH_MESSAGE)
         logger.warning("[АВТОРИЗАЦИЯ] Ожидание завершения авторизации пользователем в 4 открытых вкладках...")
 
         try:

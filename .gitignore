@@ -30,6 +30,9 @@ screenshots/errors/*.png
 !screenshots/errors/.gitkeep
 downloads/pages_cache/*.html
 !downloads/pages_cache/.gitkeep
+downloads/*.html
+downloads/*_files/
+downloads/pages_cache/*_files/
 .chrome_temp_profile/
 .chrome_bot_profile/
 chrome_automation_profile/
