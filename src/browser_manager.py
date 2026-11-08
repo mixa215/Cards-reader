@@ -27,6 +27,14 @@ from config_loader import BrowserConfig, AppConfig
 import config as base_config
 
 
+MARKETPLACE_URLS = {
+    "Ozon": "https://www.ozon.ru/",
+    "Wildberries": "https://www.wildberries.ru/",
+    "Яндекс Маркет": "https://market.yandex.ru/",
+    "Avito": "https://www.avito.ru/",
+}
+
+
 class BrowserManager:
     """
     Менеджер браузера на базе выделенного постоянного профиля Playwright (Persistent Context).
@@ -106,78 +114,83 @@ class BrowserManager:
             )
             return context, context
 
-    def check_or_request_auth(self, context: BrowserContext, test_url: Optional[str] = None) -> bool:
+    def setup_all_marketplace_tabs(self, context: BrowserContext) -> list[Page]:
         """
-        Режим первичной авторизации:
-          1. Проверяет наличие файла-маркера .auth_confirmed в каталоге профиля.
-          2. Если сессия новая: открывает страницу маркетплейса, проверяет наличие кнопок входа.
-          3. При необходимости запрашивает ручную авторизацию через input().
-          4. Куки персистентно сохраняются в каталоге профиля chrome_automation_profile.
+        Открывает 4 вкладки со всеми целевыми маркетплейсами одновременно:
+          - Ozon: https://www.ozon.ru/
+          - Wildberries: https://www.wildberries.ru/
+          - Яндекс Маркет: https://market.yandex.ru/
+          - Avito: https://www.avito.ru/
+        Использует wait_until="commit" для быстрой отрисовки без зависания на фоновой аналитике.
+        """
+        opened_pages = []
+        for name, url in MARKETPLACE_URLS.items():
+            logger.info(f"[АВТОРИЗАЦИЯ] Открытие вкладки {name}: {url}")
+            try:
+                # Если уже открыта пустая страница about:blank, используем её
+                if not opened_pages and context.pages and context.pages[0].url in ("about:blank", ""):
+                    page = context.pages[0]
+                else:
+                    page = context.new_page()
+                opened_pages.append(page)
+                page.goto(url, wait_until="commit", timeout=30_000)
+            except Exception as e:
+                logger.warning(f"[АВТОРИЗАЦИЯ] Замечание при открытии {name} ({url}): {e}")
+
+        return opened_pages
+
+    def check_or_request_auth(
+        self,
+        context: BrowserContext,
+        force: bool = False,
+        test_url: Optional[str] = None,
+    ) -> bool:
+        """
+        Режим первичной настройки/авторизации:
+          1. Если файл-маркер .auth_confirmed существует и force=False, этап пропускается.
+          2. Если авторизация требуется (или force=True):
+             - Открывает 4 вкладки (Ozon, Wildberries, Яндекс Маркет, Avito) через setup_all_marketplace_tabs;
+             - Выводит в терминал сообщение с разделителями;
+             - Ожидает нажатия [ENTER] от пользователя;
+             - Сохраняет файл-маркер .auth_confirmed;
+             - Закрывает 4 настроечные вкладки перед стартом выгрузки товаров.
         """
         auth_marker = self.profile_dir / ".auth_confirmed"
-        if auth_marker.exists() and not test_url:
+        if auth_marker.exists() and not force and not test_url:
             logger.info("✓ Профиль автоматизации уже авторизован (.auth_confirmed обнаружен).")
             return True
 
-        check_url = test_url or "https://www.avito.ru"
-        logger.info(f"Проверка состояния авторизации через {check_url}...")
-        page: Page = context.new_page()
+        opened_pages = self.setup_all_marketplace_tabs(context)
+
+        message = (
+            "\n" + "=" * 70 + "\n"
+            "[АВТОРИЗАЦИЯ] Открыты 4 вкладки: Ozon, Wildberries, Яндекс Маркет, Avito.\n"
+            "Войдите в свои аккаунты во всех нужных сервисах.\n"
+            "После завершения входа вернитесь сюда и нажмите [ENTER] для запуска сбора...\n"
+            + "=" * 70 + "\n"
+        )
+        print(message)
+        logger.warning("[АВТОРИЗАЦИЯ] Ожидание завершения авторизации пользователем в 4 открытых вкладках...")
 
         try:
-            try:
-                page.goto(check_url, wait_until="domcontentloaded", timeout=25_000)
-                page.wait_for_timeout(2000)
-            except Exception as e:
-                logger.warning(f"Не удалось загрузить проверочную страницу {check_url}: {e}")
+            input(">>> После завершения входа во всех сервисах нажмите [ENTER]: ")
+        except (EOFError, OSError):
+            logger.debug("Консольный ввод недоступен (неинтерактивный режим).")
 
-            # Селекторы кнопок входа на популярных площадках
-            login_selectors = [
-                'a[data-marker*="login"]',
-                'a:has-text("Войти")',
-                'button:has-text("Войти")',
-                'a:has-text("Вход и регистрация")',
-                'button:has-text("Вход и регистрация")',
-                '[data-widget*="login"]',
-            ]
+        try:
+            auth_marker.write_text(f"Auth confirmed at {time.ctime()}\n", encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"Не удалось записать файл .auth_confirmed: {e}")
 
-            needs_auth = False
-            for sel in login_selectors:
-                try:
-                    if page.locator(sel).first.is_visible(timeout=1500):
-                        needs_auth = True
-                        break
-                except Exception:
-                    pass
-
-            if not auth_marker.exists() or needs_auth:
-                print("\n" + "=" * 78)
-                print("  [ACTION REQUIRED] Пожалуйста, авторизуйтесь в открывшемся окне Chrome")
-                print("  на нужных площадках (Ozon, Wildberries, Яндекс Маркет, Avito).")
-                print("  Нажмите ENTER в консоли после завершения входа...")
-                print("=" * 78 + "\n")
-                logger.warning("[ACTION REQUIRED] Ожидание завершения авторизации пользователем...")
-
-                try:
-                    input(">>> Нажмите ENTER после успешного входа на площадки: ")
-                except (EOFError, OSError):
-                    logger.debug("Консольный ввод недоступен (неинтерактивный режим).")
-
-                try:
-                    auth_marker.write_text(f"Auth confirmed at {time.ctime()}\n", encoding="utf-8")
-                except Exception:
-                    pass
-
-                logger.success("✓ Авторизация успешно сохранена в chrome_automation_profile!")
-            else:
-                logger.info("✓ Авторизованная сессия активна.")
-
-            return True
-
-        finally:
+        # Закрываем настроечные вкладки перед стартом парсинга товаров
+        for page in opened_pages:
             try:
                 page.close()
             except Exception:
                 pass
+
+        logger.success("✓ Авторизация на всех 4 площадках подтверждена и сохранена в chrome_automation_profile!")
+        return True
 
     def close(self, context: Optional[BrowserContext] = None, browser: Optional[Any] = None) -> None:
         """

@@ -95,6 +95,24 @@ class TestBrowserPersistentManager(unittest.TestCase):
             self.assertNotIn("channel", second_call_kwargs)
             self.assertEqual(ctx, mock_context)
 
+    def test_setup_all_marketplace_tabs(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = BrowserConfig(profile_dir=td)
+            manager = BrowserManager(cfg)
+
+            mock_context = MagicMock()
+            mock_context.pages = []
+            mock_page = MagicMock()
+            mock_context.new_page.return_value = mock_page
+
+            pages = manager.setup_all_marketplace_tabs(mock_context)
+            self.assertEqual(len(pages), 4)
+            self.assertEqual(mock_page.goto.call_count, 4)
+
+            # Проверяем, что передавался параметр wait_until="commit"
+            for call in mock_page.goto.call_args_list:
+                self.assertEqual(call[1]["wait_until"], "commit")
+
     def test_check_or_request_auth_existing_marker(self):
         with tempfile.TemporaryDirectory() as td:
             cfg = BrowserConfig(profile_dir=td)
@@ -119,14 +137,33 @@ class TestBrowserPersistentManager(unittest.TestCase):
             self.assertFalse(marker_file.exists())
 
             mock_context = MagicMock()
+            mock_context.pages = []
             mock_page = MagicMock()
             mock_context.new_page.return_value = mock_page
 
             with patch("builtins.input", return_value=""):
-                res = manager.check_or_request_auth(mock_context, test_url="https://www.avito.ru")
+                res = manager.check_or_request_auth(mock_context)
                 self.assertTrue(res)
                 self.assertTrue(marker_file.exists())
-                mock_page.close.assert_called_once()
+                self.assertEqual(mock_page.close.call_count, 4)
+
+    def test_check_or_request_auth_force_flag(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = BrowserConfig(profile_dir=td)
+            manager = BrowserManager(cfg)
+
+            marker_file = manager.profile_dir / ".auth_confirmed"
+            marker_file.write_text("old_auth", encoding="utf-8")
+
+            mock_context = MagicMock()
+            mock_context.pages = []
+            mock_page = MagicMock()
+            mock_context.new_page.return_value = mock_page
+
+            with patch("builtins.input", return_value=""):
+                res = manager.check_or_request_auth(mock_context, force=True)
+                self.assertTrue(res)
+                self.assertEqual(mock_page.close.call_count, 4)
 
     def test_ensure_chrome_ready_creates_dir(self):
         with tempfile.TemporaryDirectory() as td:

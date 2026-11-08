@@ -342,9 +342,25 @@ def main() -> None:
         action="store_true",
         help="Выполнить один цикл проверки и выйти (без циклического ожидания)",
     )
+    parser.add_argument(
+        "--auth",
+        action="store_true",
+        help="Открыть 4 вкладки (Ozon, Wildberries, Яндекс Маркет, Avito) для ручной авторизации в профиле",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    if args.auth:
+        from playwright.sync_api import sync_playwright
+        from browser_manager import BrowserManager
+        bm = BrowserManager(cfg)
+        with sync_playwright() as pw:
+            context, _ = bm.get_context(pw)
+            try:
+                bm.check_or_request_auth(context, force=True)
+            finally:
+                bm.close(context)
+        return
     if args.interval and args.interval > 0:
         cfg.check_interval_minutes = args.interval
     if args.downloader:
